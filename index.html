@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Volumetric Time Visualizer</title>
+    <title>Volumetric Time Visualizer v1.1</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Three.js -->
@@ -24,6 +24,7 @@
         /* Custom Range Slider */
         input[type=range] {
             -webkit-appearance: none;
+            appearance: none;
             width: 100%;
             background: transparent;
         }
@@ -307,7 +308,7 @@
         let activeCamera, perspCamera, orthoCamera; // Cameras
         let stackGroup = new THREE.Group();
         let scannerMesh; // Smooth scanner mesh
-        let frameTextures = []; // Stores Meshes, but we access texture via mesh.material
+        let frameMeshes = [];
         let isProcessing = false;
         let currentVideoDuration = 0; 
         
@@ -319,7 +320,6 @@
         // Generation Parameters Storage (for visibility calculations)
         const stackGenParams = {
             start: 0,
-            end: 0,
             duration: 0
         };
 
@@ -360,8 +360,6 @@
         // Geometry / Source DOM
         const fpsSelect = document.getElementById('fpsSelect');
         const resolutionSelect = document.getElementById('resolutionSelect');
-        const frameCountInput = document.getElementById('frameCount');
-        const frameCountVal = document.getElementById('frameCountVal');
         
         // Trim DOM
         const trimStartInput = document.getElementById('trimStart');
@@ -708,15 +706,17 @@
             
             const fps = parseInt(fpsSelect.value);
             const maxFrames = Math.floor(trimmedDuration * fps);
+            const sliderMin = parseInt(inputs.count.min) || 1;
+            const sliderMax = Math.max(sliderMin, maxFrames);
             
             // Update Slider Max
-            inputs.count.max = Math.max(10, maxFrames);
+            inputs.count.max = sliderMax;
             
             // Clamp current value if it exceeds new max
             const currentVal = parseInt(inputs.count.value);
-            if (currentVal > maxFrames) {
-                inputs.count.value = maxFrames;
-                displays.count.textContent = maxFrames;
+            if (currentVal > sliderMax) {
+                inputs.count.value = sliderMax;
+                displays.count.textContent = sliderMax;
             }
         }
 
@@ -726,107 +726,104 @@
 
             if(isProcessing) return;
             isProcessing = true;
+            let video = null;
+            let objectUrl = '';
+            let didBuildStack = false;
+            let extractedFrames = [];
 
             statusContainer.classList.remove('hidden');
             controlsArea.classList.add('opacity-50', 'pointer-events-none');
-            
-            playback.isPlaying = false;
-            playback.currentIndex = 0;
-            timelineInput.value = 0;
-            playPauseBtn.textContent = 'Play';
-            renderer.clear();
-            
-            clearStack();
-
-            const video = document.createElement('video');
-            video.style.display = 'none';
-            document.body.appendChild(video);
-
-            video.src = URL.createObjectURL(file);
-            video.muted = true;
-            video.playsInline = true;
-            video.autoplay = false;
-            video.crossOrigin = "anonymous";
+            statusText.textContent = 'PROCESSING...';
+            progressText.textContent = '0%';
+            progressBar.style.width = '0%';
 
             try {
+                video = document.createElement('video');
+                video.style.display = 'none';
+                document.body.appendChild(video);
+
+                objectUrl = URL.createObjectURL(file);
+                video.src = objectUrl;
+                video.muted = true;
+                video.playsInline = true;
+                video.autoplay = false;
+                video.crossOrigin = "anonymous";
+
                 await new Promise((resolve, reject) => {
                     video.onloadedmetadata = () => resolve();
-                    video.onerror = (e) => reject("Video Load Error");
+                    video.onerror = () => reject(new Error('Video Load Error'));
                 });
-            } catch(e) {
-                console.error(e);
-                statusText.textContent = "ERROR LOADING VIDEO";
-                isProcessing = false;
-                return;
-            }
 
-            const duration = (isFinite(video.duration) && video.duration > 0) ? video.duration : 5;
-            
-            // Check if this is a new file (simple heuristic: if max of trim slider is default or 0)
-            // or if the duration doesn't match current trim max
-            if (Math.abs(parseFloat(trimEndInput.max) - duration) > 0.1) {
-                currentVideoDuration = duration;
+                playback.isPlaying = false;
+                playback.currentIndex = 0;
+                playback.direction = 1;
+                timelineInput.value = 0;
+                playPauseBtn.textContent = 'Play';
+                renderer.clear();
                 
-                // Update Trim Sliders Limits
-                trimStartInput.max = duration;
-                trimEndInput.max = duration;
+                clearStack();
+
+                const duration = (isFinite(video.duration) && video.duration > 0) ? video.duration : 5;
                 
-                // Reset Trim positions to Full Video
-                trimStartInput.value = 0;
-                trimEndInput.value = duration;
-                trimValues.textContent = `0.0s - ${duration.toFixed(1)}s`;
-            }
-            
-            // Get Trim Values
-            const startTime = parseFloat(trimStartInput.value);
-            const endTime = parseFloat(trimEndInput.value);
-            const trimDuration = Math.max(0.1, endTime - startTime);
+                // Check if this is a new file (simple heuristic: if max of trim slider is default or 0)
+                // or if the duration doesn't match current trim max
+                if (Math.abs(parseFloat(trimEndInput.max) - duration) > 0.1) {
+                    currentVideoDuration = duration;
+                    
+                    // Update Trim Sliders Limits
+                    trimStartInput.max = duration;
+                    trimEndInput.max = duration;
+                    
+                    // Reset Trim positions to Full Video
+                    trimStartInput.value = 0;
+                    trimEndInput.value = duration;
+                    trimValues.textContent = `0.0s - ${duration.toFixed(1)}s`;
+                }
+                
+                // Get Trim Values
+                const startTime = parseFloat(trimStartInput.value);
+                const endTime = parseFloat(trimEndInput.value);
+                const trimDuration = Math.max(0.1, endTime - startTime);
 
-            // Save Gen Params for visibility logic
-            stackGenParams.start = startTime;
-            stackGenParams.end = endTime;
-            stackGenParams.duration = trimDuration;
+                // Save Gen Params for visibility logic
+                stackGenParams.start = startTime;
+                stackGenParams.duration = trimDuration;
 
-            // Update limits
-            updateFrameSliderLimits();
-            
-            targetFrameCount = parseInt(inputs.count.value);
-            const maxRes = parseInt(resolutionSelect.value);
+                // Update limits
+                updateFrameSliderLimits();
+                
+                targetFrameCount = parseInt(inputs.count.value);
+                const maxRes = parseInt(resolutionSelect.value);
+                
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                const scaleFactor = Math.min(1, maxRes / Math.max(video.videoWidth, video.videoHeight));
+                canvas.width = video.videoWidth * scaleFactor;
+                canvas.height = video.videoHeight * scaleFactor;
 
-            const interval = trimDuration / targetFrameCount;
-            let currentTime = startTime; // Start at trim start
-            
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            const scaleFactor = Math.min(1, maxRes / Math.max(video.videoWidth, video.videoHeight));
-            canvas.width = video.videoWidth * scaleFactor;
-            canvas.height = video.videoHeight * scaleFactor;
+                const frames = [];
+                extractedFrames = frames;
 
-            const frames = [];
-
-            try {
                 for (let i = 0; i < targetFrameCount; i++) {
                     const progress = Math.round((i / targetFrameCount) * 100);
                     progressBar.style.width = `${progress}%`;
-                    progressText.innerText = `${progress}%`;
+                    progressText.textContent = `${progress}%`;
 
+                    const sampleT = targetFrameCount > 1 ? i / (targetFrameCount - 1) : 0;
+                    const currentTime = Math.min(startTime + sampleT * trimDuration, duration);
                     video.currentTime = currentTime;
 
                     await new Promise(r => {
                         let resolved = false;
-                        const seekHandler = () => {
+                        const finishSeek = () => {
                             if(resolved) return;
                             resolved = true;
-                            video.removeEventListener('seeked', seekHandler);
+                            clearTimeout(timeoutHandler);
+                            video.removeEventListener('seeked', finishSeek);
                             r();
                         };
-                        const timeoutHandler = setTimeout(() => {
-                            if(resolved) return;
-                            resolved = true;
-                            video.removeEventListener('seeked', seekHandler);
-                            r(); 
-                        }, 800);
-                        video.addEventListener('seeked', seekHandler);
+                        const timeoutHandler = setTimeout(finishSeek, 800);
+                        video.addEventListener('seeked', finishSeek);
                     });
 
                     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -846,41 +843,89 @@
                         aspectRatio: canvas.width / canvas.height
                     });
 
-                    currentTime += interval;
                     await new Promise(r => setTimeout(r, 10)); // Yield
                 }
-            } catch (err) {
-                console.error("Processing interrupted:", err);
+
+                if (frames.length === 0) {
+                    throw new Error('No frames were extracted');
+                }
+
+                progressBar.style.width = '100%';
+                progressText.textContent = '100%';
+                buildStack(frames);
+                didBuildStack = true;
+            } catch(e) {
+                console.error(e);
+                statusText.textContent = "ERROR PROCESSING VIDEO";
+                progressText.textContent = "0%";
+                progressBar.style.width = '0%';
+            } finally {
+                if (video) {
+                    video.pause();
+                    video.removeAttribute('src');
+                    video.load();
+                    if (video.parentNode) {
+                        video.parentNode.removeChild(video);
+                    }
+                }
+                if (objectUrl) {
+                    URL.revokeObjectURL(objectUrl);
+                }
+
+                isProcessing = false;
+                controlsArea.classList.remove('opacity-50', 'pointer-events-none');
+
+                if (didBuildStack) {
+                    statusContainer.classList.add('hidden');
+                    togglePanel(false);
+                } else {
+                    extractedFrames.forEach(frame => {
+                        if (frame.texture) {
+                            frame.texture.dispose();
+                        }
+                    });
+                }
             }
-
-            buildStack(frames);
-
-            URL.revokeObjectURL(video.src);
-            document.body.removeChild(video);
-            
-            isProcessing = false;
-            statusContainer.classList.add('hidden');
-            controlsArea.classList.remove('opacity-50', 'pointer-events-none');
-            
-            togglePanel(false);
         }
 
         function clearStack() {
+            const disposedGeometries = new Set();
+            const disposedTextures = new Set();
+
+            const disposeGeometry = (geometry) => {
+                if (!geometry || disposedGeometries.has(geometry)) return;
+                geometry.dispose();
+                disposedGeometries.add(geometry);
+            };
+
+            const disposeTexture = (texture) => {
+                if (!texture || disposedTextures.has(texture)) return;
+                texture.dispose();
+                disposedTextures.add(texture);
+            };
+
             while(stackGroup.children.length > 0){ 
                 const mesh = stackGroup.children[0];
-                if(mesh.geometry) mesh.geometry.dispose();
+                disposeGeometry(mesh.geometry);
                 if(mesh.material) {
-                    if(mesh.material.uniforms.map.value) mesh.material.uniforms.map.value.dispose();
+                    if(mesh.material.uniforms && mesh.material.uniforms.map) {
+                        disposeTexture(mesh.material.uniforms.map.value);
+                    }
                     mesh.material.dispose();
                 }
                 stackGroup.remove(mesh); 
             }
-            frameTextures = [];
+            frameMeshes = [];
             
             if(scannerMesh) {
                 scene.remove(scannerMesh);
-                scannerMesh.geometry.dispose();
-                scannerMesh.material.dispose();
+                disposeGeometry(scannerMesh.geometry);
+                if(scannerMesh.material) {
+                    if(scannerMesh.material.uniforms && scannerMesh.material.uniforms.map) {
+                        disposeTexture(scannerMesh.material.uniforms.map.value);
+                    }
+                    scannerMesh.material.dispose();
+                }
                 scannerMesh = null;
             }
         }
@@ -920,7 +965,7 @@
                 plane.position.y = index * spacing;
 
                 stackGroup.add(plane);
-                frameTextures.push(plane);
+                frameMeshes.push(plane);
             });
 
             const scannerMat = new THREE.ShaderMaterial({
@@ -990,8 +1035,8 @@
 
                 scannerMesh.position.y = playback.currentIndex * spacing;
                 
-                const texIndex = Math.min(Math.floor(playback.currentIndex), frameTextures.length - 1);
-                const frameMesh = frameTextures[texIndex];
+                const texIndex = Math.min(Math.floor(playback.currentIndex), frameMeshes.length - 1);
+                const frameMesh = frameMeshes[texIndex];
                 if(frameMesh && frameMesh.material.uniforms.map.value) {
                      scannerMesh.material.uniforms.map.value = frameMesh.material.uniforms.map.value;
                 }
@@ -1027,8 +1072,13 @@
             });
         }
 
-        function animate(time) {
+        function animate(time = performance.now()) {
             requestAnimationFrame(animate);
+            const deltaSeconds = playback.lastTime
+                ? Math.min((time - playback.lastTime) / 1000, 0.1)
+                : 0;
+            playback.lastTime = time;
+
             controls.update();
 
             // --- Light Painting Logic ---
@@ -1057,9 +1107,9 @@
 
             if (playback.isPlaying && stackGroup.children.length > 0) {
                 const totalFrames = stackGroup.children.length;
-                const speed = 0.5 * playback.speed; 
+                const framesPerSecond = 30 * playback.speed; 
                 
-                playback.currentIndex += speed * playback.direction;
+                playback.currentIndex += framesPerSecond * deltaSeconds * playback.direction;
 
                 if (playback.loop) {
                     if (playback.currentIndex >= totalFrames - 0.1) {
