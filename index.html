@@ -192,6 +192,13 @@
                             <span class="text-xs text-gray-400">Exposure</span>
                             <span id="exposureStatus" class="text-[10px] text-gray-500 font-mono">NEEDS BAKE</span>
                         </div>
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-xs">
+                                <label class="text-gray-400">Samples / Frame</label>
+                                <span id="exposureSamplesVal" class="text-gray-200 font-mono">30</span>
+                            </div>
+                            <input type="range" id="exposureSamples" min="1" max="60" value="30" step="1">
+                        </div>
                         <button id="bakeExposureBtn" class="w-full py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-xs text-white border border-gray-700 transition font-medium">
                             Bake Current View
                         </button>
@@ -425,7 +432,8 @@
             scale: document.getElementById('scale'),
             blendMode: document.getElementById('blendMode'),
             threshold: document.getElementById('threshold'),
-            brightThreshold: document.getElementById('brightThreshold')
+            brightThreshold: document.getElementById('brightThreshold'),
+            exposureSamples: document.getElementById('exposureSamples')
         };
         
         const displays = {
@@ -434,7 +442,8 @@
             spacing: document.getElementById('spacingVal'),
             scale: document.getElementById('scaleVal'),
             threshold: document.getElementById('thresholdVal'),
-            brightThreshold: document.getElementById('brightThresholdVal')
+            brightThreshold: document.getElementById('brightThresholdVal'),
+            exposureSamples: document.getElementById('exposureSamplesVal')
         };
 
         // --- Shaders ---
@@ -486,15 +495,13 @@
 
         const exposureFragmentShader = `
             uniform sampler2D map;
-            uniform sampler2D mapNext;
-            uniform float frameMix;
             uniform float globalOpacity;
             uniform float threshold;
             uniform float brightThreshold;
             varying vec2 vUv;
 
             void main() {
-                vec4 texColor = mix(texture2D(map, vUv), texture2D(mapNext, vUv), frameMix);
+                vec4 texColor = texture2D(map, vUv);
                 
                 float alphaMap = 1.0;
                 float luminance = dot(texColor.rgb, vec3(0.299, 0.587, 0.114));
@@ -766,6 +773,11 @@
                 displays.count.textContent = e.target.value;
             });
 
+            inputs.exposureSamples.addEventListener('input', (e) => {
+                displays.exposureSamples.textContent = e.target.value;
+                markExposureDirty('SETTINGS CHANGED');
+            });
+
             inputs.blendMode.addEventListener('change', (e) => {
                 const modeName = e.target.value;
                 const blend = THREE[modeName];
@@ -847,8 +859,6 @@
                 exposureMaterial = new THREE.ShaderMaterial({
                     uniforms: {
                         map: { value: null },
-                        mapNext: { value: null },
-                        frameMix: { value: 0 },
                         globalOpacity: { value: 1 },
                         threshold: { value: 0 },
                         brightThreshold: { value: 1 }
@@ -978,7 +988,7 @@
 
             const spacing = parseFloat(inputs.spacing.value);
             const scale = parseFloat(inputs.scale.value);
-            const samplesPerFrame = 6;
+            const samplesPerFrame = parseInt(inputs.exposureSamples.value);
             const sampleCount = frameMeshes.length > 1
                 ? ((frameMeshes.length - 1) * samplesPerFrame) + 1
                 : 1;
@@ -999,16 +1009,11 @@
                 const framePosition = frameMeshes.length > 1
                     ? (sampleIndex / (sampleCount - 1)) * (frameMeshes.length - 1)
                     : 0;
-                const frameAIndex = Math.floor(framePosition);
-                const frameBIndex = Math.min(frameAIndex + 1, frameMeshes.length - 1);
-                const frameMix = framePosition - frameAIndex;
-                const textureA = getFrameTexture(frameMeshes[frameAIndex]);
-                const textureB = getFrameTexture(frameMeshes[frameBIndex]) || textureA;
-                if (!textureA || !textureB) continue;
+                const frameIndex = Math.min(Math.floor(framePosition), frameMeshes.length - 1);
+                const texture = getFrameTexture(frameMeshes[frameIndex]);
+                if (!texture) continue;
 
-                exposureMaterial.uniforms.map.value = textureA;
-                exposureMaterial.uniforms.mapNext.value = textureB;
-                exposureMaterial.uniforms.frameMix.value = frameMix;
+                exposureMaterial.uniforms.map.value = texture;
                 exposureMaterial.uniforms.globalOpacity.value = parseFloat(inputs.opacity.value) / samplesPerFrame;
                 exposureMesh.position.y = framePosition * spacing * scale;
                 renderer.render(exposureScene, activeCamera);
