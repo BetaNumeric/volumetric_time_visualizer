@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Volumetric Time Visualizer v1.1</title>
+    <title>Volumetric Time Visualizer v1.2</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Three.js -->
@@ -179,12 +179,22 @@
                         <div class="flex items-center justify-between">
                             <div class="flex items-center">
                                 <input type="checkbox" id="lightPaintToggle" class="w-3 h-3 text-white bg-gray-800 border-gray-700 rounded focus:ring-0 focus:ring-offset-0 cursor-pointer">
-                                <label for="lightPaintToggle" class="ml-2 text-xs text-blue-400 font-bold hover:text-blue-300 cursor-pointer select-none" title="Accumulate frames like long exposure">Light Painting</label>
+                                <label for="lightPaintToggle" class="ml-2 text-xs text-blue-400 font-bold hover:text-blue-300 cursor-pointer select-none" title="Viewport-buffer accumulation while scanning">Viewport Trail</label>
                             </div>
                             <button id="clearPaintBtn" class="text-[10px] text-gray-500 hover:text-white border border-gray-700 hover:border-gray-500 rounded px-2 py-0.5 transition" title="Clear Canvas">
                                 Clear
                             </button>
                         </div>
+                    </div>
+
+                    <div id="exposureOptions" class="flex flex-col space-y-2 pt-1 mb-2 pl-2 border-l border-gray-700">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs text-gray-400">Exposure</span>
+                            <span id="exposureStatus" class="text-[10px] text-gray-500 font-mono">NEEDS BAKE</span>
+                        </div>
+                        <button id="bakeExposureBtn" class="w-full py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-xs text-white border border-gray-700 transition font-medium">
+                            Bake Current View
+                        </button>
                     </div>
 
                     <div class="flex space-x-2 pt-1">
@@ -309,6 +319,16 @@
         let stackGroup = new THREE.Group();
         let scannerMesh; // Smooth scanner mesh
         let frameMeshes = [];
+        let exposureRenderTarget = null;
+        let exposureScene = null;
+        let exposureMesh = null;
+        let exposureMaterial = null;
+        let exposureDisplayScene = null;
+        let exposureDisplayCamera = null;
+        let exposureDisplayMesh = null;
+        let exposureDisplayMaterial = null;
+        let exposureDirty = true;
+        let exposurePreviewVisible = false;
         let isProcessing = false;
         let currentVideoDuration = 0; 
         
@@ -368,6 +388,9 @@
         
         // Conditional UI
         const scanOptions = document.getElementById('scanOptions');
+        const exposureOptions = document.getElementById('exposureOptions');
+        const exposureStatus = document.getElementById('exposureStatus');
+        const bakeExposureBtn = document.getElementById('bakeExposureBtn');
         const smoothToggle = document.getElementById('smoothMotionToggle');
         const lightPaintToggle = document.getElementById('lightPaintToggle');
         const clearPaintBtn = document.getElementById('clearPaintBtn');
@@ -449,6 +472,46 @@
             }
         `;
 
+        const exposureDisplayFragmentShader = `
+            uniform sampler2D map;
+            varying vec2 vUv;
+
+            void main() {
+                vec4 exposure = texture2D(map, vUv);
+                vec3 mapped = vec3(1.0) - exp(-exposure.rgb);
+                mapped = pow(mapped, vec3(1.0 / 2.2));
+                gl_FragColor = vec4(mapped, 1.0);
+            }
+        `;
+
+        const exposureFragmentShader = `
+            uniform sampler2D map;
+            uniform sampler2D mapNext;
+            uniform float frameMix;
+            uniform float globalOpacity;
+            uniform float threshold;
+            uniform float brightThreshold;
+            varying vec2 vUv;
+
+            void main() {
+                vec4 texColor = mix(texture2D(map, vUv), texture2D(mapNext, vUv), frameMix);
+                
+                float alphaMap = 1.0;
+                float luminance = dot(texColor.rgb, vec3(0.299, 0.587, 0.114));
+                
+                if (threshold > 0.01) {
+                     alphaMap *= smoothstep(threshold, threshold + 0.15, luminance);
+                }
+
+                if (brightThreshold < 0.99) {
+                    float alphaBright = 1.0 - smoothstep(brightThreshold - 0.15, brightThreshold, luminance);
+                    alphaMap *= alphaBright;
+                }
+                
+                gl_FragColor = vec4(texColor.rgb, texColor.a * globalOpacity * alphaMap);
+            }
+        `;
+
         // --- Initialization ---
         function init() {
             const container = document.getElementById('canvas-container');
@@ -513,6 +576,7 @@
                 updateTrimLabel();
                 updateFrameSliderLimits(); 
                 updateVisibility(); // Live Preview
+                markExposureDirty('TRIM CHANGED');
             });
             
             trimEndInput.addEventListener('input', () => {
@@ -522,10 +586,21 @@
                 updateTrimLabel();
                 updateFrameSliderLimits();
                 updateVisibility(); // Live Preview
+                markExposureDirty('TRIM CHANGED');
+            });
+
+            controls.addEventListener('end', () => {
+                markExposureDirty('VIEW CHANGED');
+            });
+
+            controls.addEventListener('start', () => {
+                if (exposurePreviewVisible) {
+                    markExposureDirty('VIEW CHANGED');
+                }
             });
 
             // Playback Controls
-            function updateScanOptionsVisibility() {
+            function updateModeOptionsVisibility() {
                 if (playback.mode === 'scan') {
                     scanOptions.classList.remove('hidden');
                     scanOptions.classList.add('flex');
@@ -533,17 +608,26 @@
                     scanOptions.classList.add('hidden');
                     scanOptions.classList.remove('flex');
                 }
+
+                if (playback.mode === 'static') {
+                    exposureOptions.classList.remove('hidden');
+                    exposureOptions.classList.add('flex');
+                } else {
+                    exposureOptions.classList.add('hidden');
+                    exposureOptions.classList.remove('flex');
+                }
             }
 
             playbackModeSel.addEventListener('change', (e) => {
                 playback.mode = e.target.value;
-                updateScanOptionsVisibility();
+                updateModeOptionsVisibility();
 
                 if(playback.mode === 'static') {
                     playback.isPlaying = false;
                     playPauseBtn.textContent = 'Play';
                     updateVisibility(); 
                 } else {
+                    markExposureDirty('NEEDS BAKE');
                     if (!playback.isPlaying) {
                        playback.isPlaying = true; 
                        playPauseBtn.textContent = 'Pause';
@@ -555,9 +639,10 @@
                 playback.isPlaying = !playback.isPlaying;
                 playPauseBtn.textContent = playback.isPlaying ? 'Pause' : 'Play';
                 if(playback.mode === 'static' && playback.isPlaying) {
+                    markExposureDirty('NEEDS BAKE');
                     playback.mode = 'scan';
                     playbackModeSel.value = 'scan';
-                    updateScanOptionsVisibility();
+                    updateModeOptionsVisibility();
                 }
             });
 
@@ -571,6 +656,10 @@
             
             clearPaintBtn.addEventListener('click', () => {
                 renderer.clear();
+            });
+
+            bakeExposureBtn.addEventListener('click', () => {
+                bakeExposure();
             });
 
             speedInput.addEventListener('input', (e) => {
@@ -622,6 +711,7 @@
                 controls.update(); 
                 onWindowResize(); 
                 renderer.clear(); 
+                markExposureDirty('VIEW CHANGED');
             });
 
             const updateUniforms = (key, value) => {
@@ -640,24 +730,28 @@
                 const val = parseFloat(e.target.value);
                 displays.opacity.textContent = val;
                 updateUniforms('globalOpacity', val);
+                markExposureDirty('SETTINGS CHANGED');
             });
 
             inputs.threshold.addEventListener('input', (e) => {
                 const val = parseFloat(e.target.value);
                 displays.threshold.textContent = val;
                 updateUniforms('threshold', val);
+                markExposureDirty('SETTINGS CHANGED');
             });
 
             inputs.brightThreshold.addEventListener('input', (e) => {
                 const val = parseFloat(e.target.value);
                 displays.brightThreshold.textContent = val;
                 updateUniforms('brightThreshold', val);
+                markExposureDirty('SETTINGS CHANGED');
             });
 
             inputs.spacing.addEventListener('input', (e) => {
                 const val = parseFloat(e.target.value);
                 displays.spacing.textContent = val;
                 updateSpacing(val);
+                markExposureDirty('GEOMETRY CHANGED');
             });
 
             inputs.scale.addEventListener('input', (e) => {
@@ -665,6 +759,7 @@
                 displays.scale.textContent = val;
                 stackGroup.scale.setScalar(val);
                 if(scannerMesh) scannerMesh.scale.setScalar(val);
+                markExposureDirty('GEOMETRY CHANGED');
             });
 
             inputs.count.addEventListener('input', (e) => {
@@ -693,6 +788,250 @@
             });
 
             animate();
+        }
+
+        // --- Accumulated Exposure ---
+
+        function setExposureStatus(message, isReady = false) {
+            exposureStatus.textContent = message;
+            exposureStatus.className = `text-[10px] font-mono ${isReady ? 'text-green-400' : 'text-gray-500'}`;
+        }
+
+        function markExposureDirty(message = 'NEEDS BAKE') {
+            exposureDirty = true;
+            exposurePreviewVisible = false;
+            setExposureStatus(message, false);
+        }
+
+        function getExposureTargetSize() {
+            const dpr = Math.min(window.devicePixelRatio || 1, 2);
+            const maxSide = 1000;
+            let width = Math.max(1, Math.floor(window.innerWidth * dpr));
+            let height = Math.max(1, Math.floor(window.innerHeight * dpr));
+            const scale = Math.min(1, maxSide / Math.max(width, height));
+
+            return {
+                width: Math.max(1, Math.floor(width * scale)),
+                height: Math.max(1, Math.floor(height * scale))
+            };
+        }
+
+        function ensureExposureResources() {
+            const targetSize = getExposureTargetSize();
+
+            if (
+                !exposureRenderTarget ||
+                exposureRenderTarget.width !== targetSize.width ||
+                exposureRenderTarget.height !== targetSize.height
+            ) {
+                if (exposureRenderTarget) {
+                    exposureRenderTarget.dispose();
+                }
+
+                exposureRenderTarget = new THREE.WebGLRenderTarget(targetSize.width, targetSize.height, {
+                    minFilter: THREE.LinearFilter,
+                    magFilter: THREE.LinearFilter,
+                    format: THREE.RGBAFormat,
+                    type: THREE.UnsignedByteType,
+                    depthBuffer: false,
+                    stencilBuffer: false
+                });
+                exposureRenderTarget.texture.name = 'Accumulated Exposure';
+            }
+
+            if (!exposureScene) {
+                exposureScene = new THREE.Scene();
+            }
+
+            if (!exposureMaterial) {
+                exposureMaterial = new THREE.ShaderMaterial({
+                    uniforms: {
+                        map: { value: null },
+                        mapNext: { value: null },
+                        frameMix: { value: 0 },
+                        globalOpacity: { value: 1 },
+                        threshold: { value: 0 },
+                        brightThreshold: { value: 1 }
+                    },
+                    vertexShader: vertexShader,
+                    fragmentShader: exposureFragmentShader,
+                    transparent: true,
+                    side: THREE.FrontSide,
+                    depthTest: false,
+                    depthWrite: false
+                });
+                exposureMaterial.blending = THREE.AdditiveBlending;
+            }
+
+            if (!exposureMesh) {
+                exposureMesh = new THREE.Mesh(frameMeshes[0].geometry, exposureMaterial);
+                exposureMesh.rotation.x = -Math.PI / 2;
+                exposureScene.add(exposureMesh);
+            } else {
+                exposureMesh.geometry = frameMeshes[0].geometry;
+            }
+
+            if (!exposureDisplayScene) {
+                exposureDisplayScene = new THREE.Scene();
+                exposureDisplayCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 2);
+                exposureDisplayCamera.position.z = 1;
+            }
+
+            if (!exposureDisplayMaterial) {
+                exposureDisplayMaterial = new THREE.ShaderMaterial({
+                    uniforms: {
+                        map: { value: exposureRenderTarget.texture }
+                    },
+                    vertexShader: vertexShader,
+                    fragmentShader: exposureDisplayFragmentShader,
+                    depthTest: false,
+                    depthWrite: false
+                });
+            }
+
+            if (!exposureDisplayMesh) {
+                exposureDisplayMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), exposureDisplayMaterial);
+                exposureDisplayScene.add(exposureDisplayMesh);
+            }
+
+            exposureDisplayMaterial.uniforms.map.value = exposureRenderTarget.texture;
+        }
+
+        function disposeExposure() {
+            if (exposureRenderTarget) {
+                exposureRenderTarget.dispose();
+                exposureRenderTarget = null;
+            }
+
+            if (exposureMesh) {
+                if (exposureScene) {
+                    exposureScene.remove(exposureMesh);
+                }
+                exposureMesh = null;
+            }
+
+            if (exposureMaterial) {
+                exposureMaterial.dispose();
+                exposureMaterial = null;
+            }
+
+            if (exposureDisplayMesh) {
+                if (exposureDisplayScene) {
+                    exposureDisplayScene.remove(exposureDisplayMesh);
+                }
+                exposureDisplayMesh.geometry.dispose();
+                exposureDisplayMesh = null;
+            }
+
+            if (exposureDisplayMaterial) {
+                exposureDisplayMaterial.dispose();
+                exposureDisplayMaterial = null;
+            }
+
+            exposureScene = null;
+            exposureDisplayScene = null;
+            exposureDisplayCamera = null;
+            exposureDirty = true;
+            exposurePreviewVisible = false;
+            setExposureStatus('NEEDS BAKE', false);
+        }
+
+        function getSliceTime(index, total) {
+            if (total <= 1) return stackGenParams.start;
+            return stackGenParams.start + (index / (total - 1)) * stackGenParams.duration;
+        }
+
+        function frameIsWithinTrim(index, total) {
+            const uiStart = parseFloat(trimStartInput.value);
+            const uiEnd = parseFloat(trimEndInput.value);
+            const sliceTime = getSliceTime(index, total);
+            return sliceTime >= uiStart - 0.01 && sliceTime <= uiEnd + 0.01;
+        }
+
+        function sampleIsWithinTrim(sampleIndex, sampleCount) {
+            const uiStart = parseFloat(trimStartInput.value);
+            const uiEnd = parseFloat(trimEndInput.value);
+            const t = sampleCount > 1 ? sampleIndex / (sampleCount - 1) : 0;
+            const sliceTime = stackGenParams.start + t * stackGenParams.duration;
+            return sliceTime >= uiStart - 0.01 && sliceTime <= uiEnd + 0.01;
+        }
+
+        function getFrameTexture(mesh) {
+            return mesh && mesh.material && mesh.material.uniforms && mesh.material.uniforms.map
+                ? mesh.material.uniforms.map.value
+                : null;
+        }
+
+        function bakeExposure() {
+            if (frameMeshes.length === 0) {
+                setExposureStatus('NO FRAMES', false);
+                return;
+            }
+
+            setExposureStatus('BAKING...', false);
+            ensureExposureResources();
+
+            const previousTarget = renderer.getRenderTarget();
+            const previousAutoClear = renderer.autoClear;
+            const previousClearColor = renderer.getClearColor(new THREE.Color());
+            const previousClearAlpha = renderer.getClearAlpha();
+
+            const spacing = parseFloat(inputs.spacing.value);
+            const scale = parseFloat(inputs.scale.value);
+            const samplesPerFrame = 6;
+            const sampleCount = frameMeshes.length > 1
+                ? ((frameMeshes.length - 1) * samplesPerFrame) + 1
+                : 1;
+            let renderedSamples = 0;
+
+            exposureMaterial.uniforms.threshold.value = parseFloat(inputs.threshold.value);
+            exposureMaterial.uniforms.brightThreshold.value = parseFloat(inputs.brightThreshold.value);
+            exposureMesh.scale.setScalar(scale);
+
+            renderer.setRenderTarget(exposureRenderTarget);
+            renderer.setClearColor(0x000000, 1);
+            renderer.autoClear = false;
+            renderer.clear(true, true, true);
+
+            for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++) {
+                if (!sampleIsWithinTrim(sampleIndex, sampleCount)) continue;
+
+                const framePosition = frameMeshes.length > 1
+                    ? (sampleIndex / (sampleCount - 1)) * (frameMeshes.length - 1)
+                    : 0;
+                const frameAIndex = Math.floor(framePosition);
+                const frameBIndex = Math.min(frameAIndex + 1, frameMeshes.length - 1);
+                const frameMix = framePosition - frameAIndex;
+                const textureA = getFrameTexture(frameMeshes[frameAIndex]);
+                const textureB = getFrameTexture(frameMeshes[frameBIndex]) || textureA;
+                if (!textureA || !textureB) continue;
+
+                exposureMaterial.uniforms.map.value = textureA;
+                exposureMaterial.uniforms.mapNext.value = textureB;
+                exposureMaterial.uniforms.frameMix.value = frameMix;
+                exposureMaterial.uniforms.globalOpacity.value = parseFloat(inputs.opacity.value) / samplesPerFrame;
+                exposureMesh.position.y = framePosition * spacing * scale;
+                renderer.render(exposureScene, activeCamera);
+                renderedSamples++;
+            }
+
+            renderer.setRenderTarget(previousTarget);
+            renderer.setClearColor(previousClearColor, previousClearAlpha);
+            renderer.autoClear = previousAutoClear;
+
+            exposureDirty = false;
+            exposurePreviewVisible = true;
+            updateVisibility();
+            setExposureStatus(renderedSamples > 0 ? `${renderedSamples} SAMPLES` : 'NO FRAMES', renderedSamples > 0);
+        }
+
+        function renderExposureView() {
+            if (!exposureRenderTarget || !exposureDisplayScene || !exposureDisplayCamera) {
+                renderer.render(scene, activeCamera);
+                return;
+            }
+
+            renderer.render(exposureDisplayScene, exposureDisplayCamera);
         }
 
         // --- Video Processing ---
@@ -889,6 +1228,8 @@
         }
 
         function clearStack() {
+            disposeExposure();
+
             const disposedGeometries = new Set();
             const disposedTextures = new Set();
 
@@ -996,6 +1337,7 @@
             activeCamera.lookAt(0, height / 2, 0);
             
             controls.autoRotate = false;
+            markExposureDirty('NEEDS BAKE');
         }
 
         function updateSpacing(val) {
@@ -1021,6 +1363,7 @@
             orthoCamera.updateProjectionMatrix();
 
             renderer.setSize(window.innerWidth, window.innerHeight);
+            markExposureDirty('VIEW CHANGED');
         }
 
         function updateVisibility() {
@@ -1033,7 +1376,7 @@
                 stackGroup.visible = false;
                 scannerMesh.visible = true;
 
-                scannerMesh.position.y = playback.currentIndex * spacing;
+                scannerMesh.position.y = playback.currentIndex * spacing * stackGroup.scale.y;
                 
                 const texIndex = Math.min(Math.floor(playback.currentIndex), frameMeshes.length - 1);
                 const frameMesh = frameMeshes[texIndex];
@@ -1057,7 +1400,7 @@
 
                 if (playback.mode === 'static') {
                     // Check trim preview
-                    const sliceTime = stackGenParams.start + (index / (total - 1)) * stackGenParams.duration;
+                    const sliceTime = getSliceTime(index, total);
                     // Fuzzy match due to float precision
                     if (sliceTime >= uiStart - 0.01 && sliceTime <= uiEnd + 0.01) {
                         shouldBeVisible = true;
@@ -1081,8 +1424,17 @@
 
             controls.update();
 
+            if (exposurePreviewVisible) {
+                scene.background = backgroundColor;
+                renderer.autoClear = true;
+                renderExposureView();
+                lastCameraPos.copy(activeCamera.position);
+                lastCameraQuat.copy(activeCamera.quaternion);
+                return;
+            }
+
             // --- Light Painting Logic ---
-            const isPainting = lightPaintToggle.checked;
+            const isPainting = playback.mode === 'scan' && lightPaintToggle.checked;
             
             if (isPainting) {
                 scene.background = null;
