@@ -92,14 +92,14 @@
         <!-- Scrollable Content -->
         <div class="space-y-6 max-h-[80vh] overflow-y-auto pr-1">
             
-            <!-- Video Source Section -->
+            <!-- Source Section -->
             <div class="space-y-3">
-                <h2 class="text-[10px] font-bold text-gray-600 uppercase tracking-widest">Video Source</h2>
+                <h2 class="text-[10px] font-bold text-gray-600 uppercase tracking-widest">Source</h2>
                 
                 <div class="group relative">
                     <label class="block w-full cursor-pointer bg-gray-900 border border-gray-800 border-dashed hover:border-gray-600 rounded-lg p-3 text-center transition">
-                        <span class="text-xs text-gray-400 font-medium group-hover:text-gray-200">Click to Upload Video</span>
-                        <input type="file" id="videoInput" accept="video/*" class="hidden"/>
+                        <span class="text-xs text-gray-400 font-medium group-hover:text-gray-200">Click to Upload Video or Images</span>
+                        <input type="file" id="videoInput" accept="video/*,image/*" multiple class="hidden"/>
                     </label>
                 </div>
 
@@ -244,7 +244,7 @@
                             <label class="text-gray-400">Frames</label>
                             <span id="frameCountVal" class="text-gray-200 font-mono">200</span>
                         </div>
-                        <input type="range" id="frameCount" min="10" max="600" value="200" step="1">
+                        <input type="range" id="frameCount" min="1" max="600" value="200" step="1">
                     </div>
 
                     <div class="space-y-1">
@@ -337,7 +337,10 @@
         let exposureDirty = true;
         let exposurePreviewVisible = false;
         let isProcessing = false;
-        let currentVideoDuration = 0; 
+        let currentSourceType = null;
+        let currentSourceDuration = 0;
+        let currentSourceSignature = '';
+        let currentSequenceFiles = [];
         
         // Tracking for Light Painting
         const lastCameraPos = new THREE.Vector3();
@@ -419,6 +422,10 @@
                 openBtn.classList.remove('opacity-0', 'pointer-events-none', 'scale-90');
                 openBtn.classList.add('opacity-100', 'scale-100');
             }
+        }
+
+        function updateTrimLabel() {
+            trimValues.textContent = `${parseFloat(trimStartInput.value).toFixed(1)}s - ${parseFloat(trimEndInput.value).toFixed(1)}s`;
         }
 
         closeBtn.addEventListener('click', () => togglePanel(false));
@@ -572,10 +579,6 @@
             fileInput.addEventListener('change', handleFileSelect);
             
             // Trim Logic
-            function updateTrimLabel() {
-                trimValues.textContent = `${parseFloat(trimStartInput.value).toFixed(1)}s - ${parseFloat(trimEndInput.value).toFixed(1)}s`;
-            }
-            
             trimStartInput.addEventListener('input', () => {
                 if (parseFloat(trimStartInput.value) >= parseFloat(trimEndInput.value)) {
                     trimStartInput.value = parseFloat(trimEndInput.value) - 0.1;
@@ -697,6 +700,9 @@
             });
             
             fpsSelect.addEventListener('change', () => {
+                if (currentSourceType === 'sequence') {
+                    refreshSequenceTimingFromFps();
+                }
                 updateFrameSliderLimits();
             });
 
@@ -1039,17 +1045,189 @@
             renderer.render(exposureDisplayScene, exposureDisplayCamera);
         }
 
-        // --- Video Processing ---
+        // --- Source Processing ---
+
+        function isImageFile(file) {
+            return file.type.startsWith('image/') || /\.(avif|bmp|gif|jpe?g|png|webp)$/i.test(file.name);
+        }
+
+        function isVideoFile(file) {
+            return file.type.startsWith('video/') || /\.(avi|m4v|mkv|mov|mp4|ogv|webm)$/i.test(file.name);
+        }
+
+        function compareSequenceFiles(a, b) {
+            return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+        }
+
+        function getFilesSignature(files) {
+            return files.map(file => `${file.name}:${file.size}:${file.lastModified}`).join('|');
+        }
+
+        function getSelectedSource(fileList) {
+            const files = Array.from(fileList || []);
+            const imageFiles = files.filter(isImageFile).sort(compareSequenceFiles);
+            const videoFiles = files.filter(isVideoFile);
+
+            if (imageFiles.length > 0) {
+                return { type: 'sequence', files: imageFiles };
+            }
+
+            if (videoFiles.length > 0) {
+                return { type: 'video', files: [videoFiles[0]] };
+            }
+
+            return null;
+        }
+
+        function getSequenceDuration(fileCount, fps) {
+            if (fileCount <= 1) return 0.1;
+            return Math.max(0.1, (fileCount - 1) / Math.max(1, fps));
+        }
+
+        function clamp01(value) {
+            return Math.min(1, Math.max(0, value));
+        }
+
+        function applyTrimValues(start, end, duration) {
+            const maxDuration = Math.max(0.1, duration);
+            const minGap = Math.min(0.1, maxDuration);
+
+            start = Math.max(0, Math.min(start, maxDuration - minGap));
+            end = Math.max(minGap, Math.min(end, maxDuration));
+
+            if (end - start < minGap) {
+                if (end >= maxDuration) {
+                    start = Math.max(0, end - minGap);
+                } else {
+                    end = Math.min(maxDuration, start + minGap);
+                }
+            }
+
+            trimStartInput.max = maxDuration;
+            trimEndInput.max = maxDuration;
+            trimStartInput.value = start;
+            trimEndInput.value = end;
+            updateTrimLabel();
+        }
+
+        function setTrimRange(duration, resetToFull) {
+            const maxDuration = Math.max(0.1, duration);
+            if (resetToFull) {
+                applyTrimValues(0, maxDuration, maxDuration);
+            } else {
+                applyTrimValues(parseFloat(trimStartInput.value), parseFloat(trimEndInput.value), maxDuration);
+            }
+        }
+
+        function refreshSequenceTimingFromFps() {
+            if (currentSourceType !== 'sequence' || currentSequenceFiles.length === 0) return;
+
+            const previousDuration = currentSourceDuration || parseFloat(trimEndInput.max) || 0.1;
+            const startRatio = clamp01(parseFloat(trimStartInput.value) / previousDuration);
+            const endRatio = clamp01(parseFloat(trimEndInput.value) / previousDuration);
+
+            currentSourceDuration = getSequenceDuration(currentSequenceFiles.length, parseInt(fpsSelect.value));
+            applyTrimValues(startRatio * currentSourceDuration, endRatio * currentSourceDuration, currentSourceDuration);
+        }
+
+        function getSequenceTrimRange(fileCount) {
+            if (fileCount <= 0) return { startIndex: 0, endIndex: -1, count: 0 };
+            if (fileCount === 1) return { startIndex: 0, endIndex: 0, count: 1 };
+
+            const duration = Math.max(0.1, currentSourceDuration);
+            const startRatio = clamp01(parseFloat(trimStartInput.value) / duration);
+            const endRatio = clamp01(parseFloat(trimEndInput.value) / duration);
+            let startIndex = Math.ceil((startRatio * (fileCount - 1)) - 0.000001);
+            let endIndex = Math.floor((endRatio * (fileCount - 1)) + 0.000001);
+
+            startIndex = Math.max(0, Math.min(startIndex, fileCount - 1));
+            endIndex = Math.max(0, Math.min(endIndex, fileCount - 1));
+
+            if (endIndex < startIndex) {
+                const nearest = Math.max(0, Math.min(Math.round(startRatio * (fileCount - 1)), fileCount - 1));
+                startIndex = nearest;
+                endIndex = nearest;
+            }
+
+            return {
+                startIndex,
+                endIndex,
+                count: endIndex - startIndex + 1
+            };
+        }
+
+        function updateProcessingProgress(index, total) {
+            const progress = total > 0 ? Math.round((index / total) * 100) : 100;
+            progressBar.style.width = `${progress}%`;
+            progressText.textContent = `${progress}%`;
+        }
+
+        function resetPlaybackState() {
+            playback.isPlaying = false;
+            playback.currentIndex = 0;
+            playback.direction = 1;
+            playback.lastTime = 0;
+            timelineInput.value = 0;
+            playPauseBtn.textContent = 'Play';
+            renderer.clear();
+        }
+
+        function getScaledDimensions(width, height, maxRes) {
+            const scaleFactor = Math.min(1, maxRes / Math.max(width, height));
+            return {
+                width: Math.max(1, Math.round(width * scaleFactor)),
+                height: Math.max(1, Math.round(height * scaleFactor))
+            };
+        }
+
+        function createTextureFrameFromCanvas(canvas) {
+            const texCanvas = document.createElement('canvas');
+            texCanvas.width = canvas.width;
+            texCanvas.height = canvas.height;
+            const texCtx = texCanvas.getContext('2d');
+            texCtx.drawImage(canvas, 0, 0);
+
+            const texture = new THREE.CanvasTexture(texCanvas);
+            texture.minFilter = THREE.LinearFilter;
+            texture.magFilter = THREE.LinearFilter;
+
+            return {
+                texture,
+                aspectRatio: canvas.width / canvas.height
+            };
+        }
+
+        function loadImageFromFile(file) {
+            return new Promise((resolve, reject) => {
+                const objectUrl = URL.createObjectURL(file);
+                const image = new Image();
+                image.onload = () => {
+                    URL.revokeObjectURL(objectUrl);
+                    resolve(image);
+                };
+                image.onerror = () => {
+                    URL.revokeObjectURL(objectUrl);
+                    reject(new Error(`Image Load Error: ${file.name}`));
+                };
+                image.src = objectUrl;
+            });
+        }
         
         function updateFrameSliderLimits() {
-            if (currentVideoDuration <= 0) return;
+            if (currentSourceDuration <= 0) return;
             
             const start = parseFloat(trimStartInput.value);
             const end = parseFloat(trimEndInput.value);
             const trimmedDuration = Math.max(0.1, end - start);
-            
-            const fps = parseInt(fpsSelect.value);
-            const maxFrames = Math.floor(trimmedDuration * fps);
+            let maxFrames = 1;
+
+            if (currentSourceType === 'sequence') {
+                maxFrames = getSequenceTrimRange(currentSequenceFiles.length).count;
+            } else {
+                const fps = parseInt(fpsSelect.value);
+                maxFrames = Math.floor(trimmedDuration * fps);
+            }
+
             const sliderMin = parseInt(inputs.count.min) || 1;
             const sliderMax = Math.max(sliderMin, maxFrames);
             
@@ -1065,10 +1243,19 @@
         }
 
         async function handleFileSelect(event) {
-            const file = event.target.files[0];
-            if (!file) return;
+            const source = getSelectedSource(event.target.files);
+            if (!source) return;
 
-            if(isProcessing) return;
+            if (source.type === 'sequence') {
+                await processImageSequenceSource(source.files);
+            } else {
+                await processVideoSource(source.files[0]);
+            }
+        }
+
+        async function processVideoSource(file) {
+            if (!file || isProcessing) return;
+
             isProcessing = true;
             let video = null;
             let objectUrl = '';
@@ -1098,31 +1285,21 @@
                     video.onerror = () => reject(new Error('Video Load Error'));
                 });
 
-                playback.isPlaying = false;
-                playback.currentIndex = 0;
-                playback.direction = 1;
-                timelineInput.value = 0;
-                playPauseBtn.textContent = 'Play';
-                renderer.clear();
+                resetPlaybackState();
                 
                 clearStack();
 
                 const duration = (isFinite(video.duration) && video.duration > 0) ? video.duration : 5;
-                
-                // Check if this is a new file (simple heuristic: if max of trim slider is default or 0)
-                // or if the duration doesn't match current trim max
-                if (Math.abs(parseFloat(trimEndInput.max) - duration) > 0.1) {
-                    currentVideoDuration = duration;
-                    
-                    // Update Trim Sliders Limits
-                    trimStartInput.max = duration;
-                    trimEndInput.max = duration;
-                    
-                    // Reset Trim positions to Full Video
-                    trimStartInput.value = 0;
-                    trimEndInput.value = duration;
-                    trimValues.textContent = `0.0s - ${duration.toFixed(1)}s`;
-                }
+                const signature = getFilesSignature([file]);
+                const isNewSource = currentSourceType !== 'video'
+                    || currentSourceSignature !== signature
+                    || Math.abs(currentSourceDuration - duration) > 0.1;
+
+                currentSourceType = 'video';
+                currentSourceDuration = duration;
+                currentSourceSignature = signature;
+                currentSequenceFiles = [];
+                setTrimRange(duration, isNewSource);
                 
                 // Get Trim Values
                 const startTime = parseFloat(trimStartInput.value);
@@ -1141,17 +1318,15 @@
                 
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d');
-                const scaleFactor = Math.min(1, maxRes / Math.max(video.videoWidth, video.videoHeight));
-                canvas.width = video.videoWidth * scaleFactor;
-                canvas.height = video.videoHeight * scaleFactor;
+                const dimensions = getScaledDimensions(video.videoWidth, video.videoHeight, maxRes);
+                canvas.width = dimensions.width;
+                canvas.height = dimensions.height;
 
                 const frames = [];
                 extractedFrames = frames;
 
                 for (let i = 0; i < targetFrameCount; i++) {
-                    const progress = Math.round((i / targetFrameCount) * 100);
-                    progressBar.style.width = `${progress}%`;
-                    progressText.textContent = `${progress}%`;
+                    updateProcessingProgress(i, targetFrameCount);
 
                     const sampleT = targetFrameCount > 1 ? i / (targetFrameCount - 1) : 0;
                     const currentTime = Math.min(startTime + sampleT * trimDuration, duration);
@@ -1172,20 +1347,7 @@
 
                     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-                    const texCanvas = document.createElement('canvas');
-                    texCanvas.width = canvas.width;
-                    texCanvas.height = canvas.height;
-                    const texCtx = texCanvas.getContext('2d');
-                    texCtx.drawImage(canvas, 0, 0);
-
-                    const texture = new THREE.CanvasTexture(texCanvas);
-                    texture.minFilter = THREE.LinearFilter;
-                    texture.magFilter = THREE.LinearFilter;
-                    
-                    frames.push({
-                        texture: texture,
-                        aspectRatio: canvas.width / canvas.height
-                    });
+                    frames.push(createTextureFrameFromCanvas(canvas));
 
                     await new Promise(r => setTimeout(r, 10)); // Yield
                 }
@@ -1216,6 +1378,110 @@
                     URL.revokeObjectURL(objectUrl);
                 }
 
+                isProcessing = false;
+                controlsArea.classList.remove('opacity-50', 'pointer-events-none');
+
+                if (didBuildStack) {
+                    statusContainer.classList.add('hidden');
+                    togglePanel(false);
+                } else {
+                    extractedFrames.forEach(frame => {
+                        if (frame.texture) {
+                            frame.texture.dispose();
+                        }
+                    });
+                }
+            }
+        }
+
+        async function processImageSequenceSource(files) {
+            if (!files || files.length === 0 || isProcessing) return;
+
+            const sequenceFiles = Array.from(files).filter(isImageFile).sort(compareSequenceFiles);
+            if (sequenceFiles.length === 0) return;
+
+            isProcessing = true;
+            let didBuildStack = false;
+            let extractedFrames = [];
+
+            statusContainer.classList.remove('hidden');
+            controlsArea.classList.add('opacity-50', 'pointer-events-none');
+            statusText.textContent = 'PROCESSING IMAGES...';
+            progressText.textContent = '0%';
+            progressBar.style.width = '0%';
+
+            try {
+                resetPlaybackState();
+                clearStack();
+
+                const signature = getFilesSignature(sequenceFiles);
+                const duration = getSequenceDuration(sequenceFiles.length, parseInt(fpsSelect.value));
+                const isNewSource = currentSourceType !== 'sequence'
+                    || currentSourceSignature !== signature
+                    || Math.abs(currentSourceDuration - duration) > 0.1;
+
+                currentSourceType = 'sequence';
+                currentSourceDuration = duration;
+                currentSourceSignature = signature;
+                currentSequenceFiles = sequenceFiles;
+                setTrimRange(duration, isNewSource);
+
+                updateFrameSliderLimits();
+
+                const trimRange = getSequenceTrimRange(sequenceFiles.length);
+                const trimmedFiles = sequenceFiles.slice(trimRange.startIndex, trimRange.endIndex + 1);
+                if (trimmedFiles.length === 0) {
+                    throw new Error('No images were selected for the current trim range');
+                }
+
+                targetFrameCount = Math.min(parseInt(inputs.count.value), trimmedFiles.length);
+                inputs.count.value = targetFrameCount;
+                displays.count.textContent = targetFrameCount;
+
+                const startTime = parseFloat(trimStartInput.value);
+                const endTime = parseFloat(trimEndInput.value);
+                const trimDuration = Math.max(0.1, endTime - startTime);
+
+                stackGenParams.start = startTime;
+                stackGenParams.duration = trimDuration;
+
+                const maxRes = parseInt(resolutionSelect.value);
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                const frames = [];
+                extractedFrames = frames;
+
+                for (let i = 0; i < targetFrameCount; i++) {
+                    updateProcessingProgress(i, targetFrameCount);
+
+                    const sampleT = targetFrameCount > 1 ? i / (targetFrameCount - 1) : 0;
+                    const sourceIndex = Math.min(Math.round(sampleT * (trimmedFiles.length - 1)), trimmedFiles.length - 1);
+                    const image = await loadImageFromFile(trimmedFiles[sourceIndex]);
+                    const dimensions = getScaledDimensions(image.naturalWidth || image.width, image.naturalHeight || image.height, maxRes);
+
+                    canvas.width = dimensions.width;
+                    canvas.height = dimensions.height;
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+                    frames.push(createTextureFrameFromCanvas(canvas));
+                    await new Promise(r => setTimeout(r, 10));
+                }
+
+                if (frames.length === 0) {
+                    throw new Error('No images were loaded');
+                }
+
+                progressBar.style.width = '100%';
+                progressText.textContent = '100%';
+                buildStack(frames);
+                didBuildStack = true;
+            } catch(e) {
+                console.error(e);
+                statusText.textContent = "ERROR PROCESSING IMAGES";
+                progressText.textContent = "0%";
+                progressBar.style.width = '0%';
+            } finally {
                 isProcessing = false;
                 controlsArea.classList.remove('opacity-50', 'pointer-events-none');
 
