@@ -99,7 +99,7 @@
                 <div class="group relative">
                     <label class="block w-full cursor-pointer bg-gray-900 border border-gray-800 border-dashed hover:border-gray-600 rounded-lg p-3 text-center transition">
                         <span class="text-xs text-gray-400 font-medium group-hover:text-gray-200">Click to Upload Video or Images</span>
-                        <input type="file" id="videoInput" accept="video/*,image/*" multiple class="hidden"/>
+                        <input type="file" id="videoInput" accept="video/*,image/*,.json,application/json" multiple class="hidden"/>
                     </label>
                 </div>
 
@@ -242,17 +242,17 @@
                     <div class="space-y-1">
                         <div class="flex justify-between text-xs">
                             <label class="text-gray-400">Frames</label>
-                            <span id="frameCountVal" class="text-gray-200 font-mono">200</span>
+                            <span id="frameCountVal" class="text-gray-200 font-mono">660</span>
                         </div>
-                        <input type="range" id="frameCount" min="1" max="600" value="200" step="1">
+                        <input type="range" id="frameCount" min="1" max="1320" value="660" step="1">
                     </div>
 
                     <div class="space-y-1">
                         <div class="flex justify-between text-xs">
-                            <label class="text-gray-400">Spacing</label>
-                            <span id="spacingVal" class="text-gray-200 font-mono">0.1</span>
+                            <label class="text-gray-400">Spacing (cm)</label>
+                            <span id="spacingVal" class="text-gray-200 font-mono">0.10 cm</span>
                         </div>
-                        <input type="range" id="spacing" min="0" max="1" value="0.1" step="0.01">
+                        <input type="range" id="spacing" min="0" max="48" value="0.1" step="0.01">
                     </div>
                     
                     <div class="space-y-1">
@@ -341,6 +341,18 @@
         let currentSourceDuration = 0;
         let currentSourceSignature = '';
         let currentSequenceFiles = [];
+
+        const DISPLAY_WIDTH_CM = 53.6;
+        const DISPLAY_HEIGHT_CM = 30.15;
+        const TRAVEL_DISTANCE_CM = 48.0;
+
+        let lastManualSpacingCm = 0.1;
+        const sourceGeometry = {
+            autoSpacing: false,
+            startCm: 0,
+            volumeHeightCm: TRAVEL_DISTANCE_CM,
+            spacingCm: 0.1
+        };
         
         // Tracking for Light Painting
         const lastCameraPos = new THREE.Vector3();
@@ -762,8 +774,13 @@
 
             inputs.spacing.addEventListener('input', (e) => {
                 const val = parseFloat(e.target.value);
-                displays.spacing.textContent = val;
+                sourceGeometry.autoSpacing = false;
+                sourceGeometry.startCm = 0;
+                sourceGeometry.volumeHeightCm = TRAVEL_DISTANCE_CM;
+                sourceGeometry.spacingCm = val;
+                setSpacingControlValue(val, false);
                 updateSpacing(val);
+                updateVisibility();
                 markExposureDirty('GEOMETRY CHANGED');
             });
 
@@ -772,6 +789,8 @@
                 displays.scale.textContent = val;
                 stackGroup.scale.setScalar(val);
                 if(scannerMesh) scannerMesh.scale.setScalar(val);
+                updateControlsTargetForStack();
+                updateVisibility();
                 markExposureDirty('GEOMETRY CHANGED');
             });
 
@@ -805,6 +824,7 @@
                 if(fileInput.files.length > 0) handleFileSelect({target: fileInput});
             });
 
+            setSpacingControlValue(parseFloat(inputs.spacing.value), false);
             animate();
         }
 
@@ -992,8 +1012,9 @@
             const previousClearColor = renderer.getClearColor(new THREE.Color());
             const previousClearAlpha = renderer.getClearAlpha();
 
-            const spacing = parseFloat(inputs.spacing.value);
+            const spacing = getCurrentSpacingCm();
             const scale = parseFloat(inputs.scale.value);
+            const startOffset = getStackStartCm();
             const samplesPerFrame = parseInt(inputs.exposureSamples.value);
             const sampleCount = frameMeshes.length > 1
                 ? ((frameMeshes.length - 1) * samplesPerFrame) + 1
@@ -1021,7 +1042,7 @@
 
                 exposureMaterial.uniforms.map.value = texture;
                 exposureMaterial.uniforms.globalOpacity.value = parseFloat(inputs.opacity.value) / samplesPerFrame;
-                exposureMesh.position.y = framePosition * spacing * scale;
+                exposureMesh.position.y = (startOffset + (framePosition * spacing)) * scale;
                 renderer.render(exposureScene, activeCamera);
                 renderedSamples++;
             }
@@ -1055,6 +1076,10 @@
             return file.type.startsWith('video/') || /\.(avi|m4v|mkv|mov|mp4|ogv|webm)$/i.test(file.name);
         }
 
+        function isSequenceMetadataFile(file) {
+            return file.name.toLowerCase() === 'sequence.json';
+        }
+
         function compareSequenceFiles(a, b) {
             return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
         }
@@ -1067,9 +1092,10 @@
             const files = Array.from(fileList || []);
             const imageFiles = files.filter(isImageFile).sort(compareSequenceFiles);
             const videoFiles = files.filter(isVideoFile);
+            const metadataFile = files.find(isSequenceMetadataFile) || null;
 
             if (imageFiles.length > 0) {
-                return { type: 'sequence', files: imageFiles };
+                return { type: 'sequence', files: imageFiles, metadataFile };
             }
 
             if (videoFiles.length > 0) {
@@ -1077,6 +1103,109 @@
             }
 
             return null;
+        }
+
+        function getDefaultSequenceMetadata() {
+            return {
+                startCm: 0,
+                volumeHeightCm: TRAVEL_DISTANCE_CM
+            };
+        }
+
+        function clamp(value, min, max) {
+            return Math.min(max, Math.max(min, value));
+        }
+
+        function normalizeSequenceMetadata(rawMetadata = {}) {
+            const defaults = getDefaultSequenceMetadata();
+            const requestedStart = Number(rawMetadata.start_cm);
+            const requestedHeight = Number(rawMetadata.volume_height_cm);
+            const startCm = Number.isFinite(requestedStart)
+                ? clamp(requestedStart, 0, TRAVEL_DISTANCE_CM)
+                : defaults.startCm;
+            const maxHeight = Math.max(0, TRAVEL_DISTANCE_CM - startCm);
+            const volumeHeightCm = Number.isFinite(requestedHeight)
+                ? clamp(requestedHeight, 0, maxHeight)
+                : Math.min(defaults.volumeHeightCm, maxHeight);
+
+            return {
+                startCm,
+                volumeHeightCm
+            };
+        }
+
+        async function loadSequenceMetadata(file) {
+            if (!file) return getDefaultSequenceMetadata();
+
+            const text = await file.text();
+            return normalizeSequenceMetadata(JSON.parse(text));
+        }
+
+        function formatSpacingCm(value) {
+            return value < 1 ? value.toFixed(3) : value.toFixed(2);
+        }
+
+        function setSpacingControlValue(value, isAuto) {
+            const spacing = Number.isFinite(value) ? Math.max(0, value) : 0;
+            const requiredMax = Math.max(spacing, TRAVEL_DISTANCE_CM, parseFloat(inputs.spacing.max) || 0);
+
+            if (!isAuto) {
+                lastManualSpacingCm = spacing;
+            }
+
+            inputs.spacing.max = requiredMax.toFixed(2);
+            inputs.spacing.value = spacing;
+            inputs.spacing.disabled = isAuto;
+            inputs.spacing.classList.toggle('opacity-50', isAuto);
+            inputs.spacing.classList.toggle('cursor-not-allowed', isAuto);
+            displays.spacing.textContent = `${formatSpacingCm(spacing)} cm${isAuto ? ' auto' : ''}`;
+        }
+
+        function applyManualGeometry() {
+            sourceGeometry.autoSpacing = false;
+            sourceGeometry.startCm = 0;
+            sourceGeometry.volumeHeightCm = TRAVEL_DISTANCE_CM;
+            sourceGeometry.spacingCm = lastManualSpacingCm;
+            setSpacingControlValue(lastManualSpacingCm, false);
+        }
+
+        function applySequenceGeometry(metadata, frameCount) {
+            const spacing = frameCount > 1
+                ? metadata.volumeHeightCm / (frameCount - 1)
+                : 0;
+
+            sourceGeometry.autoSpacing = true;
+            sourceGeometry.startCm = metadata.startCm;
+            sourceGeometry.volumeHeightCm = metadata.volumeHeightCm;
+            sourceGeometry.spacingCm = spacing;
+            setSpacingControlValue(spacing, true);
+        }
+
+        function getStackStartCm() {
+            return sourceGeometry.autoSpacing ? sourceGeometry.startCm : 0;
+        }
+
+        function getCurrentSpacingCm() {
+            return sourceGeometry.autoSpacing
+                ? sourceGeometry.spacingCm
+                : parseFloat(inputs.spacing.value);
+        }
+
+        function getStackHeightCm(frameCount, spacing) {
+            if (frameCount <= 1) return 0;
+            return (frameCount - 1) * spacing;
+        }
+
+        function getStackWorldCenterY(frameCount = stackGroup.children.length) {
+            const spacing = getCurrentSpacingCm();
+            const scale = parseFloat(inputs.scale.value);
+            const height = getStackHeightCm(frameCount, spacing);
+            return (getStackStartCm() + (height / 2)) * scale;
+        }
+
+        function updateControlsTargetForStack() {
+            if (stackGroup.children.length === 0) return;
+            controls.target.y = getStackWorldCenterY();
         }
 
         function getSequenceDuration(fileCount, fps) {
@@ -1247,7 +1376,7 @@
             if (!source) return;
 
             if (source.type === 'sequence') {
-                await processImageSequenceSource(source.files);
+                await processImageSequenceSource(source.files, source.metadataFile);
             } else {
                 await processVideoSource(source.files[0]);
             }
@@ -1300,6 +1429,7 @@
                 currentSourceSignature = signature;
                 currentSequenceFiles = [];
                 setTrimRange(duration, isNewSource);
+                applyManualGeometry();
                 
                 // Get Trim Values
                 const startTime = parseFloat(trimStartInput.value);
@@ -1394,7 +1524,7 @@
             }
         }
 
-        async function processImageSequenceSource(files) {
+        async function processImageSequenceSource(files, metadataFile = null) {
             if (!files || files.length === 0 || isProcessing) return;
 
             const sequenceFiles = Array.from(files).filter(isImageFile).sort(compareSequenceFiles);
@@ -1411,10 +1541,12 @@
             progressBar.style.width = '0%';
 
             try {
+                const sequenceMetadata = await loadSequenceMetadata(metadataFile);
+
                 resetPlaybackState();
                 clearStack();
 
-                const signature = getFilesSignature(sequenceFiles);
+                const signature = getFilesSignature(metadataFile ? [...sequenceFiles, metadataFile] : sequenceFiles);
                 const duration = getSequenceDuration(sequenceFiles.length, parseInt(fpsSelect.value));
                 const isNewSource = currentSourceType !== 'sequence'
                     || currentSourceSignature !== signature
@@ -1437,6 +1569,7 @@
                 targetFrameCount = Math.min(parseInt(inputs.count.value), trimmedFiles.length);
                 inputs.count.value = targetFrameCount;
                 displays.count.textContent = targetFrameCount;
+                applySequenceGeometry(sequenceMetadata, targetFrameCount);
 
                 const startTime = parseFloat(trimStartInput.value);
                 const endTime = parseFloat(trimEndInput.value);
@@ -1545,15 +1678,17 @@
         function buildStack(frames) {
             if(frames.length === 0) return;
             
-            const spacing = parseFloat(inputs.spacing.value);
+            const spacing = getCurrentSpacingCm();
             const initialOpacity = parseFloat(inputs.opacity.value);
             const initialThreshold = parseFloat(inputs.threshold.value);
             const initialBrightThreshold = parseFloat(inputs.brightThreshold.value);
             const modeName = inputs.blendMode.value;
-            const baseSize = 10;
+            const startOffset = getStackStartCm();
+            const scale = parseFloat(inputs.scale.value);
+            const stackHeight = getStackHeightCm(frames.length, spacing);
+            const centerY = (startOffset + (stackHeight / 2)) * scale;
 
-            const aspectRatio = frames[0].aspectRatio;
-            const geometry = new THREE.PlaneGeometry(baseSize * aspectRatio, baseSize);
+            const geometry = new THREE.PlaneGeometry(DISPLAY_WIDTH_CM, DISPLAY_HEIGHT_CM);
 
             frames.forEach((frameData, index) => {
                 const material = new THREE.ShaderMaterial({
@@ -1574,7 +1709,7 @@
 
                 const plane = new THREE.Mesh(geometry, material);
                 plane.rotation.x = -Math.PI / 2;
-                plane.position.y = index * spacing;
+                plane.position.y = startOffset + (index * spacing);
 
                 stackGroup.add(plane);
                 frameMeshes.push(plane);
@@ -1601,23 +1736,23 @@
             scannerMesh.scale.copy(stackGroup.scale); // Sync scale
             scene.add(scannerMesh);
 
-            const height = frames.length * spacing;
-            controls.target.set(0, height / 2, 0);
+            controls.target.set(0, centerY, 0);
             
-            activeCamera.position.set(20, height + 10, 20);
-            activeCamera.lookAt(0, height / 2, 0);
+            const cameraDistance = Math.max(DISPLAY_WIDTH_CM, DISPLAY_HEIGHT_CM, stackHeight, TRAVEL_DISTANCE_CM) * Math.max(scale, 0.1);
+            activeCamera.position.set(cameraDistance, centerY + (cameraDistance * 0.65), cameraDistance);
+            activeCamera.lookAt(0, centerY, 0);
             
             controls.autoRotate = false;
             markExposureDirty('NEEDS BAKE');
         }
 
         function updateSpacing(val) {
+            const startOffset = getStackStartCm();
             stackGroup.children.forEach((mesh, index) => {
-                mesh.position.y = index * val;
+                mesh.position.y = startOffset + (index * val);
             });
             if(stackGroup.children.length > 0) {
-                const height = stackGroup.children.length * val;
-                controls.target.y = height / 2;
+                updateControlsTargetForStack();
             }
         }
 
@@ -1641,13 +1776,13 @@
             if (stackGroup.children.length === 0) return;
 
             const isSmooth = smoothToggle.checked;
-            const spacing = parseFloat(inputs.spacing.value);
+            const spacing = getCurrentSpacingCm();
             
             if (playback.mode === 'scan' && isSmooth && scannerMesh) {
                 stackGroup.visible = false;
                 scannerMesh.visible = true;
 
-                scannerMesh.position.y = playback.currentIndex * spacing * stackGroup.scale.y;
+                scannerMesh.position.y = (getStackStartCm() + (playback.currentIndex * spacing)) * stackGroup.scale.y;
                 
                 const texIndex = Math.min(Math.floor(playback.currentIndex), frameMeshes.length - 1);
                 const frameMesh = frameMeshes[texIndex];
