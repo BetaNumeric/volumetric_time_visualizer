@@ -379,6 +379,7 @@
 
         const DISPLAY_WIDTH_CM = 53.6;
         const DISPLAY_HEIGHT_CM = 30.15;
+        const DISPLAY_ASPECT_RATIO = DISPLAY_WIDTH_CM / DISPLAY_HEIGHT_CM;
         const TRAVEL_DISTANCE_CM = 48.0;
 
         let lastManualSpacingCm = 0.1;
@@ -1628,12 +1629,31 @@
             renderer.clear();
         }
 
-        function getScaledDimensions(width, height, maxRes) {
-            const scaleFactor = Math.min(1, maxRes / Math.max(width, height));
+        function getDisplayTextureDimensions(maxRes) {
+            const width = DISPLAY_ASPECT_RATIO >= 1
+                ? maxRes
+                : Math.round(maxRes * DISPLAY_ASPECT_RATIO);
+            const height = DISPLAY_ASPECT_RATIO >= 1
+                ? Math.round(maxRes / DISPLAY_ASPECT_RATIO)
+                : maxRes;
+
             return {
-                width: Math.max(1, Math.round(width * scaleFactor)),
-                height: Math.max(1, Math.round(height * scaleFactor))
+                width: Math.max(1, width),
+                height: Math.max(1, height)
             };
+        }
+
+        function drawContainedFrame(ctx, drawable, sourceWidth, sourceHeight, targetWidth, targetHeight) {
+            ctx.clearRect(0, 0, targetWidth, targetHeight);
+            if (sourceWidth <= 0 || sourceHeight <= 0) return;
+
+            const scale = Math.min(targetWidth / sourceWidth, targetHeight / sourceHeight);
+            const drawWidth = sourceWidth * scale;
+            const drawHeight = sourceHeight * scale;
+            const drawX = (targetWidth - drawWidth) / 2;
+            const drawY = (targetHeight - drawHeight) / 2;
+
+            ctx.drawImage(drawable, drawX, drawY, drawWidth, drawHeight);
         }
 
         function createTextureFrameFromCanvas(canvas) {
@@ -1801,7 +1821,7 @@
                 
                 const canvas = document.createElement('canvas');
                 const ctx = canvas.getContext('2d');
-                const dimensions = getScaledDimensions(video.videoWidth, video.videoHeight, maxRes);
+                const dimensions = getDisplayTextureDimensions(maxRes);
                 canvas.width = dimensions.width;
                 canvas.height = dimensions.height;
 
@@ -1828,7 +1848,7 @@
                         video.addEventListener('seeked', finishSeek);
                     });
 
-                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    drawContainedFrame(ctx, video, video.videoWidth, video.videoHeight, canvas.width, canvas.height);
 
                     frames.push(createTextureFrameFromCanvas(canvas));
 
@@ -1945,12 +1965,18 @@
                     const drawable = await loadDrawableFromImageFile(trimmedFiles[sourceIndex]);
                     try {
                         const sourceDimensions = getDrawableDimensions(drawable);
-                        const dimensions = getScaledDimensions(sourceDimensions.width, sourceDimensions.height, maxRes);
+                        const dimensions = getDisplayTextureDimensions(maxRes);
 
                         canvas.width = dimensions.width;
                         canvas.height = dimensions.height;
-                        ctx.clearRect(0, 0, canvas.width, canvas.height);
-                        ctx.drawImage(drawable, 0, 0, canvas.width, canvas.height);
+                        drawContainedFrame(
+                            ctx,
+                            drawable,
+                            sourceDimensions.width,
+                            sourceDimensions.height,
+                            canvas.width,
+                            canvas.height
+                        );
 
                         frames.push(createTextureFrameFromCanvas(canvas));
                     } finally {
