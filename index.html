@@ -102,6 +102,9 @@
                         <input type="file" id="videoInput" accept="video/*,image/*,.json,application/json" multiple class="hidden"/>
                     </label>
                 </div>
+                <button id="folderImportBtn" class="w-full py-1.5 bg-gray-900 hover:bg-gray-800 rounded text-xs text-gray-200 border border-gray-800 transition font-medium">
+                    Open Sequence Folder
+                </button>
 
                 <!-- Trim Controls -->
                 <div class="space-y-1">
@@ -252,7 +255,37 @@
                             <label class="text-gray-400">Spacing (cm)</label>
                             <span id="spacingVal" class="text-gray-200 font-mono">0.10 cm</span>
                         </div>
-                        <input type="range" id="spacing" min="0" max="48" value="0.1" step="0.01">
+                        <input type="range" id="spacing" min="0" max="48" value="0.1" step="0.0001">
+                    </div>
+
+                    <div id="sequenceGeometryTools" class="hidden space-y-2 pt-1 pl-2 border-l border-gray-700">
+                        <div class="flex justify-between text-xs">
+                            <span class="text-gray-400">Bounds</span>
+                            <span id="sequenceBoundsVal" class="text-gray-200 font-mono">0.00 - 48.00 cm</span>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div class="space-y-1">
+                                <label class="text-[10px] text-gray-500 uppercase">Align</label>
+                                <select id="sequenceAlign">
+                                    <option value="bottom" selected>Bottom</option>
+                                    <option value="center">Center</option>
+                                    <option value="custom">Custom</option>
+                                </select>
+                            </div>
+                            <div class="space-y-1">
+                                <label class="text-[10px] text-gray-500 uppercase">JSON</label>
+                                <button id="exportSequenceJsonBtn" class="w-full py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-xs text-white border border-gray-700 transition font-medium">
+                                    Export
+                                </button>
+                            </div>
+                        </div>
+                        <div id="sequenceStartControl" class="hidden space-y-1">
+                            <div class="flex justify-between text-xs">
+                                <label class="text-gray-400">Start (cm)</label>
+                                <span id="sequenceStartVal" class="text-gray-200 font-mono">0.00</span>
+                            </div>
+                            <input type="range" id="sequenceStart" min="0" max="48" value="0" step="0.01">
+                        </div>
                     </div>
                     
                     <div class="space-y-1">
@@ -292,9 +325,9 @@
                     <div class="space-y-1">
                         <div class="flex justify-between text-xs">
                             <label class="text-gray-400">Dark Cutoff</label>
-                            <span id="thresholdVal" class="text-gray-200 font-mono">0.0</span>
+                            <span id="thresholdVal" class="text-gray-200 font-mono">0.02</span>
                         </div>
-                        <input type="range" id="threshold" min="0.0" max="0.9" value="0.0" step="0.01">
+                        <input type="range" id="threshold" min="0.0" max="0.9" value="0.02" step="0.001">
                     </div>
 
                     <div class="space-y-1">
@@ -325,6 +358,7 @@
         let activeCamera, perspCamera, orthoCamera; // Cameras
         let stackGroup = new THREE.Group();
         let scannerMesh; // Smooth scanner mesh
+        let travelCuboid = null;
         let frameMeshes = [];
         let exposureRenderTarget = null;
         let exposureScene = null;
@@ -341,6 +375,7 @@
         let currentSourceDuration = 0;
         let currentSourceSignature = '';
         let currentSequenceFiles = [];
+        let currentSequenceDirectoryHandle = null;
 
         const DISPLAY_WIDTH_CM = 53.6;
         const DISPLAY_HEIGHT_CM = 30.15;
@@ -348,7 +383,8 @@
 
         let lastManualSpacingCm = 0.1;
         const sourceGeometry = {
-            autoSpacing: false,
+            isSequence: false,
+            alignment: 'bottom',
             startCm: 0,
             volumeHeightCm: TRAVEL_DISTANCE_CM,
             spacingCm: 0.1
@@ -389,6 +425,7 @@
         const controlsArea = document.getElementById('controlsArea');
         const regenerateBtn = document.getElementById('regenerateBtn');
         const orthoToggle = document.getElementById('orthoToggle');
+        const folderImportBtn = document.getElementById('folderImportBtn');
 
         // Playback DOM
         const playPauseBtn = document.getElementById('playPauseBtn');
@@ -464,6 +501,14 @@
             brightThreshold: document.getElementById('brightThresholdVal'),
             exposureSamples: document.getElementById('exposureSamplesVal')
         };
+
+        const sequenceGeometryTools = document.getElementById('sequenceGeometryTools');
+        const sequenceBoundsVal = document.getElementById('sequenceBoundsVal');
+        const sequenceAlignSelect = document.getElementById('sequenceAlign');
+        const exportSequenceJsonBtn = document.getElementById('exportSequenceJsonBtn');
+        const sequenceStartControl = document.getElementById('sequenceStartControl');
+        const sequenceStartInput = document.getElementById('sequenceStart');
+        const sequenceStartVal = document.getElementById('sequenceStartVal');
 
         // --- Shaders ---
         const vertexShader = `
@@ -585,10 +630,17 @@
             lastCameraQuat.copy(activeCamera.quaternion);
 
             scene.add(stackGroup);
+            createTravelCuboid();
 
             // Event Listeners
             window.addEventListener('resize', onWindowResize);
             fileInput.addEventListener('change', handleFileSelect);
+            folderImportBtn.addEventListener('click', () => {
+                importSequenceFolder();
+            });
+            if (!('showDirectoryPicker' in window)) {
+                folderImportBtn.classList.add('hidden');
+            }
             
             // Trim Logic
             trimStartInput.addEventListener('input', () => {
@@ -774,14 +826,7 @@
 
             inputs.spacing.addEventListener('input', (e) => {
                 const val = parseFloat(e.target.value);
-                sourceGeometry.autoSpacing = false;
-                sourceGeometry.startCm = 0;
-                sourceGeometry.volumeHeightCm = TRAVEL_DISTANCE_CM;
-                sourceGeometry.spacingCm = val;
-                setSpacingControlValue(val, false);
-                updateSpacing(val);
-                updateVisibility();
-                markExposureDirty('GEOMETRY CHANGED');
+                applySpacingFromControl(val);
             });
 
             inputs.scale.addEventListener('input', (e) => {
@@ -789,9 +834,33 @@
                 displays.scale.textContent = val;
                 stackGroup.scale.setScalar(val);
                 if(scannerMesh) scannerMesh.scale.setScalar(val);
+                updateTravelCuboidScale();
                 updateControlsTargetForStack();
                 updateVisibility();
                 markExposureDirty('GEOMETRY CHANGED');
+            });
+
+            sequenceAlignSelect.addEventListener('change', (e) => {
+                sourceGeometry.alignment = e.target.value;
+                applyAlignmentToGeometry();
+                updateSpacing(sourceGeometry.spacingCm);
+                updateVisibility();
+                updateSequenceGeometryDisplay();
+                markExposureDirty('GEOMETRY CHANGED');
+            });
+
+            sequenceStartInput.addEventListener('input', (e) => {
+                sourceGeometry.alignment = 'custom';
+                sourceGeometry.startCm = parseFloat(e.target.value);
+                applyAlignmentToGeometry();
+                updateSpacing(sourceGeometry.spacingCm);
+                updateVisibility();
+                updateSequenceGeometryDisplay();
+                markExposureDirty('GEOMETRY CHANGED');
+            });
+
+            exportSequenceJsonBtn.addEventListener('click', async () => {
+                await exportSequenceJson();
             });
 
             inputs.count.addEventListener('input', (e) => {
@@ -820,11 +889,16 @@
                 }
             });
             
-            regenerateBtn.addEventListener('click', () => {
-                if(fileInput.files.length > 0) handleFileSelect({target: fileInput});
+            regenerateBtn.addEventListener('click', async () => {
+                if (currentSequenceDirectoryHandle) {
+                    await processSequenceDirectory(currentSequenceDirectoryHandle);
+                } else if(fileInput.files.length > 0) {
+                    handleFileSelect({target: fileInput});
+                }
             });
 
-            setSpacingControlValue(parseFloat(inputs.spacing.value), false);
+            lastManualSpacingCm = parseFloat(inputs.spacing.value);
+            applyManualGeometry();
             animate();
         }
 
@@ -1066,6 +1140,129 @@
             renderer.render(exposureDisplayScene, exposureDisplayCamera);
         }
 
+        function createTravelCuboid() {
+            const geometry = new THREE.BoxGeometry(DISPLAY_WIDTH_CM, TRAVEL_DISTANCE_CM, DISPLAY_HEIGHT_CM);
+            const edges = new THREE.EdgesGeometry(geometry);
+            const material = new THREE.LineBasicMaterial({
+                color: 0x9ca3af,
+                transparent: true,
+                opacity: 0.65
+            });
+
+            travelCuboid = new THREE.LineSegments(edges, material);
+            travelCuboid.position.y = TRAVEL_DISTANCE_CM / 2;
+            scene.add(travelCuboid);
+            updateTravelCuboidScale();
+        }
+
+        function updateTravelCuboidScale() {
+            if (!travelCuboid) return;
+
+            const scale = parseFloat(inputs.scale.value);
+            travelCuboid.scale.setScalar(scale);
+            travelCuboid.position.y = (TRAVEL_DISTANCE_CM * scale) / 2;
+        }
+
+        function roundCm(value) {
+            return Math.round(value * 1000) / 1000;
+        }
+
+        function getSequenceJsonPayload() {
+            applyAlignmentToGeometry();
+            updateSequenceGeometryDisplay();
+
+            return {
+                volume_height_cm: roundCm(sourceGeometry.volumeHeightCm),
+                start_cm: roundCm(sourceGeometry.startCm)
+            };
+        }
+
+        function getSequenceJsonText() {
+            return `${JSON.stringify(getSequenceJsonPayload(), null, 2)}\n`;
+        }
+
+        function downloadSequenceJson(jsonText) {
+            const blob = new Blob([jsonText], { type: 'application/json' });
+            const objectUrl = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = objectUrl;
+            link.download = 'sequence.json';
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(objectUrl);
+        }
+
+        async function verifyReadWritePermission(directoryHandle) {
+            const options = { mode: 'readwrite' };
+            if ((await directoryHandle.queryPermission(options)) === 'granted') return true;
+            return (await directoryHandle.requestPermission(options)) === 'granted';
+        }
+
+        async function writeSequenceJsonToDirectory(directoryHandle, jsonText) {
+            if (!directoryHandle || !(await verifyReadWritePermission(directoryHandle))) return false;
+
+            const fileHandle = await directoryHandle.getFileHandle('sequence.json', { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(jsonText);
+            await writable.close();
+            return true;
+        }
+
+        async function saveSequenceJsonWithPicker(jsonText) {
+            if (!('showSaveFilePicker' in window)) return false;
+
+            try {
+                const fileHandle = await window.showSaveFilePicker({
+                    suggestedName: 'sequence.json',
+                    types: [{
+                        description: 'JSON',
+                        accept: { 'application/json': ['.json'] }
+                    }]
+                });
+                const writable = await fileHandle.createWritable();
+                await writable.write(jsonText);
+                await writable.close();
+                return true;
+            } catch (error) {
+                if (error && error.name === 'AbortError') return null;
+                throw error;
+            }
+        }
+
+        function flashExportButton(label) {
+            const previousLabel = exportSequenceJsonBtn.textContent;
+            exportSequenceJsonBtn.textContent = label;
+            setTimeout(() => {
+                exportSequenceJsonBtn.textContent = previousLabel;
+            }, 1200);
+        }
+
+        async function exportSequenceJson() {
+            if (!sourceGeometry.isSequence) return;
+
+            const jsonText = getSequenceJsonText();
+
+            try {
+                if (await writeSequenceJsonToDirectory(currentSequenceDirectoryHandle, jsonText)) {
+                    flashExportButton('Saved');
+                    return;
+                }
+
+                const pickerResult = await saveSequenceJsonWithPicker(jsonText);
+                if (pickerResult === true) {
+                    flashExportButton('Saved');
+                    return;
+                }
+                if (pickerResult === null) return;
+
+                downloadSequenceJson(jsonText);
+            } catch (error) {
+                console.error(error);
+                downloadSequenceJson(jsonText);
+            }
+        }
+
         // --- Source Processing ---
 
         function isImageFile(file) {
@@ -1103,6 +1300,53 @@
             }
 
             return null;
+        }
+
+        async function importSequenceFolder() {
+            if (!('showDirectoryPicker' in window)) {
+                fileInput.click();
+                return;
+            }
+
+            try {
+                const directoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+                await processSequenceDirectory(directoryHandle);
+            } catch (error) {
+                if (error && error.name !== 'AbortError') {
+                    console.error(error);
+                }
+            }
+        }
+
+        async function getFilesFromDirectory(directoryHandle) {
+            const files = [];
+
+            for await (const entry of directoryHandle.values()) {
+                if (entry.kind !== 'file') continue;
+                const file = await entry.getFile();
+                files.push(file);
+            }
+
+            return files;
+        }
+
+        async function processSequenceDirectory(directoryHandle) {
+            if (!directoryHandle || isProcessing) return;
+
+            const files = await getFilesFromDirectory(directoryHandle);
+            const source = getSelectedSource(files);
+
+            if (!source || source.type !== 'sequence') {
+                currentSequenceDirectoryHandle = null;
+                statusContainer.classList.remove('hidden');
+                statusText.textContent = 'NO IMAGE SEQUENCE';
+                progressText.textContent = '0%';
+                progressBar.style.width = '0%';
+                return;
+            }
+
+            currentSequenceDirectoryHandle = directoryHandle;
+            await processImageSequenceSource(source.files, source.metadataFile);
         }
 
         function getDefaultSequenceMetadata() {
@@ -1145,50 +1389,133 @@
             return value < 1 ? value.toFixed(3) : value.toFixed(2);
         }
 
-        function setSpacingControlValue(value, isAuto) {
-            const spacing = Number.isFinite(value) ? Math.max(0, value) : 0;
-            const requiredMax = Math.max(spacing, TRAVEL_DISTANCE_CM, parseFloat(inputs.spacing.max) || 0);
+        function getActiveGeometryFrameCount() {
+            return frameMeshes.length || Math.max(1, parseInt(inputs.count.value) || 1);
+        }
 
-            if (!isAuto) {
+        function getMaxSpacingForFrameCount(frameCount) {
+            return frameCount > 1 ? TRAVEL_DISTANCE_CM / (frameCount - 1) : TRAVEL_DISTANCE_CM;
+        }
+
+        function setSpacingControlRange(frameCount = getActiveGeometryFrameCount()) {
+            const maxSpacing = sourceGeometry.isSequence
+                ? getMaxSpacingForFrameCount(frameCount)
+                : TRAVEL_DISTANCE_CM;
+            inputs.spacing.max = Math.max(0, maxSpacing).toFixed(6);
+        }
+
+        function setSpacingControlValue(value) {
+            const spacing = Number.isFinite(value) ? Math.max(0, value) : 0;
+            inputs.spacing.value = spacing;
+            inputs.spacing.disabled = false;
+            inputs.spacing.classList.remove('opacity-50', 'cursor-not-allowed');
+            displays.spacing.textContent = `${formatSpacingCm(spacing)} cm`;
+        }
+
+        function setSequenceToolsVisible(show) {
+            sequenceGeometryTools.classList.toggle('hidden', !show);
+            exportSequenceJsonBtn.disabled = !show;
+            exportSequenceJsonBtn.classList.toggle('opacity-50', !show);
+            exportSequenceJsonBtn.classList.toggle('cursor-not-allowed', !show);
+        }
+
+        function updateSequenceGeometryDisplay() {
+            const start = sourceGeometry.startCm;
+            const end = start + sourceGeometry.volumeHeightCm;
+            const maxStart = Math.max(0, TRAVEL_DISTANCE_CM - sourceGeometry.volumeHeightCm);
+            sequenceBoundsVal.textContent = `${start.toFixed(2)} - ${end.toFixed(2)} cm`;
+            sequenceAlignSelect.value = sourceGeometry.alignment;
+            sequenceStartInput.max = maxStart.toFixed(2);
+            sequenceStartInput.value = clamp(start, 0, maxStart);
+            sequenceStartVal.textContent = start.toFixed(2);
+            sequenceStartControl.classList.toggle('hidden', sourceGeometry.alignment !== 'custom');
+        }
+
+        function applyAlignmentToGeometry() {
+            const frameCount = getActiveGeometryFrameCount();
+            const volumeHeightCm = getStackHeightCm(frameCount, sourceGeometry.spacingCm);
+            const maxStart = Math.max(0, TRAVEL_DISTANCE_CM - volumeHeightCm);
+
+            sourceGeometry.volumeHeightCm = volumeHeightCm;
+
+            if (sourceGeometry.alignment === 'center') {
+                sourceGeometry.startCm = maxStart / 2;
+            } else if (sourceGeometry.alignment === 'bottom') {
+                sourceGeometry.startCm = 0;
+            } else {
+                sourceGeometry.startCm = clamp(sourceGeometry.startCm, 0, maxStart);
+            }
+        }
+
+        function inferSequenceAlignment(metadata) {
+            const centerStart = Math.max(0, TRAVEL_DISTANCE_CM - metadata.volumeHeightCm) / 2;
+
+            if (Math.abs(metadata.startCm) < 0.001) return 'bottom';
+            if (Math.abs(metadata.startCm - centerStart) < 0.001) return 'center';
+            return 'custom';
+        }
+
+        function applySpacingFromControl(rawValue) {
+            const frameCount = getActiveGeometryFrameCount();
+            setSpacingControlRange(frameCount);
+
+            const maxSpacing = parseFloat(inputs.spacing.max) || TRAVEL_DISTANCE_CM;
+            const spacing = clamp(Number.isFinite(rawValue) ? rawValue : 0, 0, maxSpacing);
+
+            sourceGeometry.spacingCm = spacing;
+
+            if (sourceGeometry.isSequence) {
+                applyAlignmentToGeometry();
+                updateSequenceGeometryDisplay();
+            } else {
+                sourceGeometry.startCm = 0;
+                sourceGeometry.volumeHeightCm = TRAVEL_DISTANCE_CM;
                 lastManualSpacingCm = spacing;
             }
 
-            inputs.spacing.max = requiredMax.toFixed(2);
-            inputs.spacing.value = spacing;
-            inputs.spacing.disabled = isAuto;
-            inputs.spacing.classList.toggle('opacity-50', isAuto);
-            inputs.spacing.classList.toggle('cursor-not-allowed', isAuto);
-            displays.spacing.textContent = `${formatSpacingCm(spacing)} cm${isAuto ? ' auto' : ''}`;
+            setSpacingControlValue(spacing);
+            updateSpacing(spacing);
+            updateVisibility();
+            markExposureDirty('GEOMETRY CHANGED');
         }
 
         function applyManualGeometry() {
-            sourceGeometry.autoSpacing = false;
+            sourceGeometry.isSequence = false;
+            sourceGeometry.alignment = 'bottom';
             sourceGeometry.startCm = 0;
             sourceGeometry.volumeHeightCm = TRAVEL_DISTANCE_CM;
             sourceGeometry.spacingCm = lastManualSpacingCm;
-            setSpacingControlValue(lastManualSpacingCm, false);
+            setSequenceToolsVisible(false);
+            setSpacingControlRange();
+            setSpacingControlValue(lastManualSpacingCm);
         }
 
-        function applySequenceGeometry(metadata, frameCount) {
+        function applySequenceGeometry(metadata, frameCount, hasMetadata) {
+            sourceGeometry.isSequence = true;
+            sourceGeometry.alignment = hasMetadata ? inferSequenceAlignment(metadata) : 'bottom';
+            sourceGeometry.startCm = metadata.startCm;
+            sourceGeometry.volumeHeightCm = metadata.volumeHeightCm;
+
+            setSequenceToolsVisible(true);
+            setSpacingControlRange(frameCount);
+
+            const maxSpacing = getMaxSpacingForFrameCount(frameCount);
             const spacing = frameCount > 1
                 ? metadata.volumeHeightCm / (frameCount - 1)
                 : 0;
 
-            sourceGeometry.autoSpacing = true;
-            sourceGeometry.startCm = metadata.startCm;
-            sourceGeometry.volumeHeightCm = metadata.volumeHeightCm;
-            sourceGeometry.spacingCm = spacing;
-            setSpacingControlValue(spacing, true);
+            sourceGeometry.spacingCm = clamp(spacing, 0, maxSpacing);
+            applyAlignmentToGeometry();
+            setSpacingControlValue(sourceGeometry.spacingCm);
+            updateSequenceGeometryDisplay();
         }
 
         function getStackStartCm() {
-            return sourceGeometry.autoSpacing ? sourceGeometry.startCm : 0;
+            return sourceGeometry.startCm;
         }
 
         function getCurrentSpacingCm() {
-            return sourceGeometry.autoSpacing
-                ? sourceGeometry.spacingCm
-                : parseFloat(inputs.spacing.value);
+            return sourceGeometry.spacingCm;
         }
 
         function getStackHeightCm(frameCount, spacing) {
@@ -1341,6 +1668,31 @@
                 image.src = objectUrl;
             });
         }
+
+        async function loadDrawableFromImageFile(file) {
+            if ('createImageBitmap' in window) {
+                try {
+                    return await createImageBitmap(file);
+                } catch (error) {
+                    console.warn('createImageBitmap failed, falling back to Image()', error);
+                }
+            }
+
+            return loadImageFromFile(file);
+        }
+
+        function getDrawableDimensions(drawable) {
+            return {
+                width: drawable.naturalWidth || drawable.videoWidth || drawable.width,
+                height: drawable.naturalHeight || drawable.videoHeight || drawable.height
+            };
+        }
+
+        function disposeDrawable(drawable) {
+            if (drawable && typeof drawable.close === 'function') {
+                drawable.close();
+            }
+        }
         
         function updateFrameSliderLimits() {
             if (currentSourceDuration <= 0) return;
@@ -1372,6 +1724,7 @@
         }
 
         async function handleFileSelect(event) {
+            currentSequenceDirectoryHandle = null;
             const source = getSelectedSource(event.target.files);
             if (!source) return;
 
@@ -1569,7 +1922,7 @@
                 targetFrameCount = Math.min(parseInt(inputs.count.value), trimmedFiles.length);
                 inputs.count.value = targetFrameCount;
                 displays.count.textContent = targetFrameCount;
-                applySequenceGeometry(sequenceMetadata, targetFrameCount);
+                applySequenceGeometry(sequenceMetadata, targetFrameCount, Boolean(metadataFile));
 
                 const startTime = parseFloat(trimStartInput.value);
                 const endTime = parseFloat(trimEndInput.value);
@@ -1589,16 +1942,20 @@
 
                     const sampleT = targetFrameCount > 1 ? i / (targetFrameCount - 1) : 0;
                     const sourceIndex = Math.min(Math.round(sampleT * (trimmedFiles.length - 1)), trimmedFiles.length - 1);
-                    const image = await loadImageFromFile(trimmedFiles[sourceIndex]);
-                    const dimensions = getScaledDimensions(image.naturalWidth || image.width, image.naturalHeight || image.height, maxRes);
+                    const drawable = await loadDrawableFromImageFile(trimmedFiles[sourceIndex]);
+                    try {
+                        const sourceDimensions = getDrawableDimensions(drawable);
+                        const dimensions = getScaledDimensions(sourceDimensions.width, sourceDimensions.height, maxRes);
 
-                    canvas.width = dimensions.width;
-                    canvas.height = dimensions.height;
-                    ctx.clearRect(0, 0, canvas.width, canvas.height);
-                    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+                        canvas.width = dimensions.width;
+                        canvas.height = dimensions.height;
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        ctx.drawImage(drawable, 0, 0, canvas.width, canvas.height);
 
-                    frames.push(createTextureFrameFromCanvas(canvas));
-                    await new Promise(r => setTimeout(r, 10));
+                        frames.push(createTextureFrameFromCanvas(canvas));
+                    } finally {
+                        disposeDrawable(drawable);
+                    }
                 }
 
                 if (frames.length === 0) {
