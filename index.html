@@ -113,8 +113,8 @@
                         <span id="trimValues" class="font-mono text-[10px]">0.0s - 0.0s</span>
                     </div>
                     <div class="space-y-1 pt-1">
-                        <input type="range" id="trimStart" min="0" max="100" value="0" step="0.1" class="accent-green-500">
-                        <input type="range" id="trimEnd" min="0" max="100" value="100" step="0.1" class="accent-red-500">
+                        <input type="range" id="trimStart" min="0" max="100" value="0" step="any" class="accent-green-500">
+                        <input type="range" id="trimEnd" min="0" max="100" value="100" step="any" class="accent-red-500">
                     </div>
                 </div>
 
@@ -1587,7 +1587,7 @@
 
         function getSequenceDuration(fileCount, fps) {
             if (fileCount <= 1) return 0.1;
-            return Math.max(0.1, (fileCount - 1) / Math.max(1, fps));
+            return Math.max(0.1, fileCount / Math.max(1, fps));
         }
 
         function clamp01(value) {
@@ -1640,17 +1640,19 @@
             if (fileCount <= 0) return { startIndex: 0, endIndex: -1, count: 0 };
             if (fileCount === 1) return { startIndex: 0, endIndex: 0, count: 1 };
 
+            const fps = Math.max(1, parseInt(fpsSelect.value) || 1);
             const duration = Math.max(0.1, currentSourceDuration);
-            const startRatio = clamp01(parseFloat(trimStartInput.value) / duration);
-            const endRatio = clamp01(parseFloat(trimEndInput.value) / duration);
-            let startIndex = Math.ceil((startRatio * (fileCount - 1)) - 0.000001);
-            let endIndex = Math.floor((endRatio * (fileCount - 1)) + 0.000001);
+            const epsilon = 0.000001;
+            const startTime = clamp(parseFloat(trimStartInput.value), 0, duration);
+            const endTime = clamp(parseFloat(trimEndInput.value), 0, duration);
+            let startIndex = Math.floor((startTime * fps) + epsilon);
+            let endIndex = Math.ceil((endTime * fps) - epsilon) - 1;
 
             startIndex = Math.max(0, Math.min(startIndex, fileCount - 1));
             endIndex = Math.max(0, Math.min(endIndex, fileCount - 1));
 
             if (endIndex < startIndex) {
-                const nearest = Math.max(0, Math.min(Math.round(startRatio * (fileCount - 1)), fileCount - 1));
+                const nearest = Math.max(0, Math.min(Math.floor(startTime * fps), fileCount - 1));
                 startIndex = nearest;
                 endIndex = nearest;
             }
@@ -1986,6 +1988,10 @@
                 const trimmedFiles = sequenceFiles.slice(trimRange.startIndex, trimRange.endIndex + 1);
                 if (trimmedFiles.length === 0) {
                     throw new Error('No images were selected for the current trim range');
+                }
+
+                if (isNewSource) {
+                    inputs.count.value = trimmedFiles.length;
                 }
 
                 targetFrameCount = Math.min(parseInt(inputs.count.value), trimmedFiles.length);
