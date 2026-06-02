@@ -62,6 +62,23 @@
             outline: none;
         }
         select:focus { border-color: #666; }
+
+        .value-input {
+            width: 4.25rem;
+            background: transparent;
+            color: #e5e7eb;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            padding: 1px 4px;
+            text-align: right;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 11px;
+            outline: none;
+        }
+        .value-input:hover, .value-input:focus {
+            border-color: #4b5563;
+            background: rgba(31, 41, 55, 0.65);
+        }
     </style>
 </head>
 <body>
@@ -80,7 +97,7 @@
         <!-- Header -->
         <div class="flex justify-between items-center mb-6">
             <div>
-                <h1 class="text-sm font-semibold text-white tracking-wide uppercase">Volumetric Time</h1>
+                <h1 class="text-sm font-semibold text-white tracking-wide uppercase">Volumetric Time Visualizer</h1>
             </div>
             <button id="closePanelBtn" class="text-gray-500 hover:text-white transition p-1">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -151,6 +168,9 @@
                 <div class="w-full bg-gray-800 rounded-full h-1">
                     <div id="progressBar" class="bg-white h-1 rounded-full transition-all duration-100" style="width: 0%"></div>
                 </div>
+                <button id="cancelProcessingBtn" class="w-full py-1.5 bg-gray-900 hover:bg-gray-800 rounded text-xs text-gray-200 border border-gray-800 transition font-medium">
+                    Cancel Processing
+                </button>
             </div>
 
             <hr class="border-gray-800" />
@@ -198,7 +218,7 @@
                         <div class="space-y-1">
                             <div class="flex justify-between text-xs">
                                 <label class="text-gray-400">Samples / Frame</label>
-                                <span id="exposureSamplesVal" class="text-gray-200 font-mono">30</span>
+                                <input type="number" id="exposureSamplesVal" min="1" max="60" value="30" step="1" class="value-input">
                             </div>
                             <input type="range" id="exposureSamples" min="1" max="60" value="30" step="1">
                         </div>
@@ -230,7 +250,10 @@
                     <div class="space-y-1">
                         <div class="flex justify-between text-xs">
                             <label class="text-gray-400">Speed</label>
-                            <span id="speedVal" class="text-gray-200 font-mono">1.0x</span>
+                            <div class="flex items-center gap-1">
+                                <input type="number" id="speedVal" min="0.1" max="3.0" value="1.0" step="0.1" class="value-input">
+                                <span class="text-gray-400">x</span>
+                            </div>
                         </div>
                         <input type="range" id="speed" min="0.1" max="3.0" value="1.0" step="0.1">
                     </div>
@@ -245,7 +268,7 @@
                     <div class="space-y-1">
                         <div class="flex justify-between text-xs">
                             <label class="text-gray-400">Frames</label>
-                            <span id="frameCountVal" class="text-gray-200 font-mono">660</span>
+                            <input type="number" id="frameCountVal" min="1" max="1320" value="660" step="1" class="value-input">
                         </div>
                         <input type="range" id="frameCount" min="1" max="1320" value="660" step="1">
                     </div>
@@ -257,7 +280,8 @@
                                 <button id="fitSpacingBtn" class="px-2 py-0.5 bg-gray-800 hover:bg-gray-700 rounded text-[10px] text-white border border-gray-700 transition">
                                     Fit
                                 </button>
-                                <span id="spacingVal" class="text-gray-200 font-mono">0.10 cm</span>
+                                <input type="number" id="spacingVal" min="0" max="48" value="0.1" step="0.0001" class="value-input">
+                                <span class="text-gray-400">cm</span>
                             </div>
                         </div>
                         <input type="range" id="spacing" min="0" max="48" value="0.1" step="0.0001">
@@ -287,7 +311,7 @@
                         <div id="sequenceStartControl" class="hidden space-y-1">
                             <div class="flex justify-between text-xs">
                                 <label class="text-gray-400">Start (cm)</label>
-                                <span id="sequenceStartVal" class="text-gray-200 font-mono">0.00</span>
+                                <input type="number" id="sequenceStartVal" min="0" max="48" value="0" step="0.01" class="value-input">
                             </div>
                             <input type="range" id="sequenceStart" min="0" max="48" value="0" step="0.01">
                         </div>
@@ -296,7 +320,7 @@
                     <div class="space-y-1">
                         <div class="flex justify-between text-xs">
                             <label class="text-gray-400">Scale</label>
-                            <span id="scaleVal" class="text-gray-200 font-mono">1.0</span>
+                            <input type="number" id="scaleVal" min="0.1" max="3" value="1.0" step="0.1" class="value-input">
                         </div>
                         <input type="range" id="scale" min="0.1" max="3" value="1.0" step="0.1">
                     </div>
@@ -328,7 +352,7 @@
                     <div class="space-y-1">
                         <div class="flex justify-between text-xs">
                             <label class="text-gray-400">Opacity</label>
-                            <span id="opacityVal" class="text-gray-200 font-mono">0.3</span>
+                            <input type="number" id="opacityVal" min="0.01" max="1" value="0.3" step="0.01" class="value-input">
                         </div>
                         <input type="range" id="opacity" min="0.01" max="1" value="0.3" step="0.01">
                     </div>
@@ -336,7 +360,7 @@
                     <div class="space-y-1">
                         <div class="flex justify-between text-xs">
                             <label class="text-gray-400">Dark Cutoff</label>
-                            <span id="thresholdVal" class="text-gray-200 font-mono">0.02</span>
+                            <input type="number" id="thresholdVal" min="0.0" max="0.9" value="0.02" step="0.001" class="value-input">
                         </div>
                         <input type="range" id="threshold" min="0.0" max="0.9" value="0.02" step="0.001">
                     </div>
@@ -344,7 +368,7 @@
                     <div class="space-y-1">
                         <div class="flex justify-between text-xs">
                             <label class="text-gray-400">Bright Cutoff</label>
-                            <span id="brightThresholdVal" class="text-gray-200 font-mono">1.0</span>
+                            <input type="number" id="brightThresholdVal" min="0.1" max="1.0" value="1.0" step="0.01" class="value-input">
                         </div>
                         <input type="range" id="brightThreshold" min="0.1" max="1.0" value="1.0" step="0.01">
                     </div>
@@ -353,10 +377,6 @@
                 <button id="regenerateBtn" class="w-full py-2 bg-white/10 hover:bg-white/20 rounded-md text-xs font-semibold text-white transition border border-white/5">
                     Regenerate Stack
                 </button>
-            </div>
-            
-            <div class="text-[10px] text-gray-600 text-center select-none pt-4">
-                Interact to Rotate • Scroll to Zoom
             </div>
         </div>
     </div>
@@ -382,6 +402,7 @@
         let exposureDirty = true;
         let exposurePreviewVisible = false;
         let isProcessing = false;
+        let cancelProcessingRequested = false;
         let currentSourceType = null;
         let currentSourceDuration = 0;
         let currentSourceSignature = '';
@@ -434,6 +455,7 @@
         const statusText = document.getElementById('statusText');
         const progressText = document.getElementById('progressText');
         const progressBar = document.getElementById('progressBar');
+        const cancelProcessingBtn = document.getElementById('cancelProcessingBtn');
         const controlsArea = document.getElementById('controlsArea');
         const regenerateBtn = document.getElementById('regenerateBtn');
         const orthoToggle = document.getElementById('orthoToggle');
@@ -489,6 +511,23 @@
 
         function updateTrimLabel() {
             trimValues.textContent = `${parseFloat(trimStartInput.value).toFixed(1)}s - ${parseFloat(trimEndInput.value).toFixed(1)}s`;
+        }
+
+        function clampNumericInput(input, fallbackValue) {
+            const parsed = parseFloat(input.value);
+            const fallback = Number.isFinite(fallbackValue) ? fallbackValue : 0;
+            const min = input.min === '' ? -Infinity : parseFloat(input.min);
+            const max = input.max === '' ? Infinity : parseFloat(input.max);
+            return Math.min(max, Math.max(min, Number.isFinite(parsed) ? parsed : fallback));
+        }
+
+        function bindNumberInputToRange(numberInput, rangeInput) {
+            numberInput.addEventListener('change', () => {
+                const value = clampNumericInput(numberInput, parseFloat(rangeInput.value));
+                rangeInput.value = value;
+                numberInput.value = value;
+                rangeInput.dispatchEvent(new Event('input', { bubbles: true }));
+            });
         }
 
         closeBtn.addEventListener('click', () => togglePanel(false));
@@ -655,6 +694,9 @@
             if (!('showDirectoryPicker' in window)) {
                 folderImportBtn.classList.add('hidden');
             }
+            cancelProcessingBtn.addEventListener('click', () => {
+                requestProcessingCancel();
+            });
             
             // Trim Logic
             trimStartInput.addEventListener('input', () => {
@@ -752,7 +794,7 @@
 
             speedInput.addEventListener('input', (e) => {
                 playback.speed = parseFloat(e.target.value);
-                speedVal.textContent = playback.speed.toFixed(1) + 'x';
+                speedVal.value = playback.speed.toFixed(1);
             });
             
             timelineInput.addEventListener('input', (e) => {
@@ -819,21 +861,21 @@
             // Setup Slider Listeners
             inputs.opacity.addEventListener('input', (e) => {
                 const val = parseFloat(e.target.value);
-                displays.opacity.textContent = val;
+                displays.opacity.value = val;
                 updateUniforms('globalOpacity', val);
                 markExposureDirty('SETTINGS CHANGED');
             });
 
             inputs.threshold.addEventListener('input', (e) => {
                 const val = parseFloat(e.target.value);
-                displays.threshold.textContent = val;
+                displays.threshold.value = val;
                 updateUniforms('threshold', val);
                 markExposureDirty('SETTINGS CHANGED');
             });
 
             inputs.brightThreshold.addEventListener('input', (e) => {
                 const val = parseFloat(e.target.value);
-                displays.brightThreshold.textContent = val;
+                displays.brightThreshold.value = val;
                 updateUniforms('brightThreshold', val);
                 markExposureDirty('SETTINGS CHANGED');
             });
@@ -849,7 +891,7 @@
 
             inputs.scale.addEventListener('input', (e) => {
                 const val = parseFloat(e.target.value);
-                displays.scale.textContent = val;
+                displays.scale.value = val;
                 stackGroup.scale.setScalar(val);
                 if(scannerMesh) scannerMesh.scale.setScalar(val);
                 updateTravelCuboidScale();
@@ -886,11 +928,11 @@
             });
 
             inputs.count.addEventListener('input', (e) => {
-                displays.count.textContent = e.target.value;
+                displays.count.value = e.target.value;
             });
 
             inputs.exposureSamples.addEventListener('input', (e) => {
-                displays.exposureSamples.textContent = e.target.value;
+                displays.exposureSamples.value = e.target.value;
                 markExposureDirty('SETTINGS CHANGED');
             });
 
@@ -918,6 +960,16 @@
                     handleFileSelect({target: fileInput});
                 }
             });
+
+            bindNumberInputToRange(speedVal, speedInput);
+            bindNumberInputToRange(displays.count, inputs.count);
+            bindNumberInputToRange(displays.spacing, inputs.spacing);
+            bindNumberInputToRange(displays.scale, inputs.scale);
+            bindNumberInputToRange(displays.opacity, inputs.opacity);
+            bindNumberInputToRange(displays.threshold, inputs.threshold);
+            bindNumberInputToRange(displays.brightThreshold, inputs.brightThreshold);
+            bindNumberInputToRange(displays.exposureSamples, inputs.exposureSamples);
+            bindNumberInputToRange(sequenceStartVal, sequenceStartInput);
 
             lastManualSpacingCm = parseFloat(inputs.spacing.value);
             applyManualGeometry();
@@ -1414,7 +1466,7 @@
         }
 
         function formatSpacingCm(value) {
-            return value < 1 ? value.toFixed(3) : value.toFixed(2);
+            return value < 1 ? value.toFixed(4) : value.toFixed(2);
         }
 
         function getActiveGeometryFrameCount() {
@@ -1430,6 +1482,7 @@
                 ? getMaxSpacingForFrameCount(frameCount)
                 : TRAVEL_DISTANCE_CM;
             inputs.spacing.max = Math.max(0, maxSpacing).toFixed(6);
+            displays.spacing.max = inputs.spacing.max;
         }
 
         function setSpacingControlValue(value) {
@@ -1437,7 +1490,7 @@
             inputs.spacing.value = spacing;
             inputs.spacing.disabled = false;
             inputs.spacing.classList.remove('opacity-50', 'cursor-not-allowed');
-            displays.spacing.textContent = `${formatSpacingCm(spacing)} cm`;
+            displays.spacing.value = formatSpacingCm(spacing);
         }
 
         function setSequenceToolsVisible(show) {
@@ -1454,8 +1507,9 @@
             sequenceBoundsVal.textContent = `${start.toFixed(2)} - ${end.toFixed(2)} cm`;
             sequenceAlignSelect.value = sourceGeometry.alignment;
             sequenceStartInput.max = maxStart.toFixed(2);
+            sequenceStartVal.max = sequenceStartInput.max;
             sequenceStartInput.value = clamp(start, 0, maxStart);
-            sequenceStartVal.textContent = start.toFixed(2);
+            sequenceStartVal.value = start.toFixed(2);
             sequenceStartControl.classList.toggle('hidden', sourceGeometry.alignment !== 'custom');
         }
 
@@ -1670,6 +1724,51 @@
             progressText.textContent = `${progress}%`;
         }
 
+        function beginProcessing(message) {
+            isProcessing = true;
+            cancelProcessingRequested = false;
+            statusContainer.classList.remove('hidden');
+            controlsArea.classList.add('opacity-50', 'pointer-events-none');
+            cancelProcessingBtn.disabled = false;
+            cancelProcessingBtn.textContent = 'Cancel Processing';
+            statusText.textContent = message;
+            progressText.textContent = '0%';
+            progressBar.style.width = '0%';
+        }
+
+        function requestProcessingCancel() {
+            if (!isProcessing) return;
+            cancelProcessingRequested = true;
+            cancelProcessingBtn.disabled = true;
+            cancelProcessingBtn.textContent = 'Cancelling...';
+            statusText.textContent = 'CANCELLING...';
+        }
+
+        function throwIfProcessingCancelled() {
+            if (cancelProcessingRequested) {
+                throw new Error('Processing Cancelled');
+            }
+        }
+
+        function finishProcessing() {
+            isProcessing = false;
+            cancelProcessingRequested = false;
+            cancelProcessingBtn.disabled = false;
+            cancelProcessingBtn.textContent = 'Cancel Processing';
+            controlsArea.classList.remove('opacity-50', 'pointer-events-none');
+        }
+
+        function handleProcessingError(error, label) {
+            if (error && error.message === 'Processing Cancelled') {
+                statusText.textContent = 'CANCELLED';
+            } else {
+                console.error(error);
+                statusText.textContent = label;
+            }
+            progressText.textContent = '0%';
+            progressBar.style.width = '0%';
+        }
+
         function resetPlaybackState() {
             playback.isPlaying = false;
             playback.currentIndex = 0;
@@ -1785,12 +1884,13 @@
             
             // Update Slider Max
             inputs.count.max = sliderMax;
+            displays.count.max = sliderMax;
             
             // Clamp current value if it exceeds new max
             const currentVal = parseInt(inputs.count.value);
             if (currentVal > sliderMax) {
                 inputs.count.value = sliderMax;
-                displays.count.textContent = sliderMax;
+                displays.count.value = sliderMax;
             }
         }
 
@@ -1809,17 +1909,12 @@
         async function processVideoSource(file) {
             if (!file || isProcessing) return;
 
-            isProcessing = true;
             let video = null;
             let objectUrl = '';
             let didBuildStack = false;
             let extractedFrames = [];
 
-            statusContainer.classList.remove('hidden');
-            controlsArea.classList.add('opacity-50', 'pointer-events-none');
-            statusText.textContent = 'PROCESSING...';
-            progressText.textContent = '0%';
-            progressBar.style.width = '0%';
+            beginProcessing('PROCESSING...');
 
             try {
                 video = document.createElement('video');
@@ -1837,10 +1932,12 @@
                     video.onloadedmetadata = () => resolve();
                     video.onerror = () => reject(new Error('Video Load Error'));
                 });
+                throwIfProcessingCancelled();
 
                 resetPlaybackState();
                 
                 clearStack();
+                throwIfProcessingCancelled();
 
                 const duration = (isFinite(video.duration) && video.duration > 0) ? video.duration : 5;
                 const signature = getFilesSignature([file]);
@@ -1880,6 +1977,7 @@
                 extractedFrames = frames;
 
                 for (let i = 0; i < targetFrameCount; i++) {
+                    throwIfProcessingCancelled();
                     updateProcessingProgress(i, targetFrameCount);
 
                     const sampleT = targetFrameCount > 1 ? i / (targetFrameCount - 1) : 0;
@@ -1898,6 +1996,7 @@
                         const timeoutHandler = setTimeout(finishSeek, 800);
                         video.addEventListener('seeked', finishSeek);
                     });
+                    throwIfProcessingCancelled();
 
                     drawContainedFrame(ctx, video, video.videoWidth, video.videoHeight, canvas.width, canvas.height);
 
@@ -1915,10 +2014,7 @@
                 buildStack(frames);
                 didBuildStack = true;
             } catch(e) {
-                console.error(e);
-                statusText.textContent = "ERROR PROCESSING VIDEO";
-                progressText.textContent = "0%";
-                progressBar.style.width = '0%';
+                handleProcessingError(e, 'ERROR PROCESSING VIDEO');
             } finally {
                 if (video) {
                     video.pause();
@@ -1932,8 +2028,7 @@
                     URL.revokeObjectURL(objectUrl);
                 }
 
-                isProcessing = false;
-                controlsArea.classList.remove('opacity-50', 'pointer-events-none');
+                finishProcessing();
 
                 if (didBuildStack) {
                     statusContainer.classList.add('hidden');
@@ -1954,21 +2049,18 @@
             const sequenceFiles = Array.from(files).filter(isImageFile).sort(compareSequenceFiles);
             if (sequenceFiles.length === 0) return;
 
-            isProcessing = true;
             let didBuildStack = false;
             let extractedFrames = [];
 
-            statusContainer.classList.remove('hidden');
-            controlsArea.classList.add('opacity-50', 'pointer-events-none');
-            statusText.textContent = 'PROCESSING IMAGES...';
-            progressText.textContent = '0%';
-            progressBar.style.width = '0%';
+            beginProcessing('PROCESSING IMAGES...');
 
             try {
                 const sequenceMetadata = await loadSequenceMetadata(metadataFile);
+                throwIfProcessingCancelled();
 
                 resetPlaybackState();
                 clearStack();
+                throwIfProcessingCancelled();
 
                 const signature = getFilesSignature(metadataFile ? [...sequenceFiles, metadataFile] : sequenceFiles);
                 const duration = getSequenceDuration(sequenceFiles.length, parseInt(fpsSelect.value));
@@ -1996,7 +2088,7 @@
 
                 targetFrameCount = Math.min(parseInt(inputs.count.value), trimmedFiles.length);
                 inputs.count.value = targetFrameCount;
-                displays.count.textContent = targetFrameCount;
+                displays.count.value = targetFrameCount;
                 applySequenceGeometry(sequenceMetadata, targetFrameCount, Boolean(metadataFile));
 
                 const startTime = parseFloat(trimStartInput.value);
@@ -2013,12 +2105,14 @@
                 extractedFrames = frames;
 
                 for (let i = 0; i < targetFrameCount; i++) {
+                    throwIfProcessingCancelled();
                     updateProcessingProgress(i, targetFrameCount);
 
                     const sampleT = targetFrameCount > 1 ? i / (targetFrameCount - 1) : 0;
                     const sourceIndex = Math.min(Math.round(sampleT * (trimmedFiles.length - 1)), trimmedFiles.length - 1);
                     const drawable = await loadDrawableFromImageFile(trimmedFiles[sourceIndex]);
                     try {
+                        throwIfProcessingCancelled();
                         const sourceDimensions = getDrawableDimensions(drawable);
                         const dimensions = getDisplayTextureDimensions(maxRes);
 
@@ -2048,13 +2142,9 @@
                 buildStack(frames);
                 didBuildStack = true;
             } catch(e) {
-                console.error(e);
-                statusText.textContent = "ERROR PROCESSING IMAGES";
-                progressText.textContent = "0%";
-                progressBar.style.width = '0%';
+                handleProcessingError(e, 'ERROR PROCESSING IMAGES');
             } finally {
-                isProcessing = false;
-                controlsArea.classList.remove('opacity-50', 'pointer-events-none');
+                finishProcessing();
 
                 if (didBuildStack) {
                     statusContainer.classList.add('hidden');
