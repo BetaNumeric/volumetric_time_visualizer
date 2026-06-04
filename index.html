@@ -1628,7 +1628,7 @@
         function normalizeSequenceMetadata(rawMetadata = {}) {
             const defaults = getDefaultSequenceMetadata();
             const requestedStart = Number(rawMetadata.start_cm);
-            const requestedHeight = Number(rawMetadata.volume_height_cm);
+            const requestedHeight = Number(rawMetadata.height_cm);
             const startCm = Number.isFinite(requestedStart)
                 ? clamp(requestedStart, 0, TRAVEL_DISTANCE_CM)
                 : defaults.startCm;
