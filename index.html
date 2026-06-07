@@ -198,6 +198,9 @@
                     <input type="checkbox" id="orthoToggle" class="w-3 h-3 rounded bg-gray-700 border-gray-600">
                 </label>
             </div>
+            <div id="orthoViewButtons" class="hidden grid grid-cols-1 gap-1 mt-2">
+                <button type="button" id="topDownViewBtn" class="py-1 px-2 rounded text-[10px] font-bold text-gray-300 bg-gray-900 hover:bg-gray-800 hover:text-white transition-colors">Top Down</button>
+            </div>
         </div>
 
         <div id="panel-content" class="p-3 space-y-3 flex-1 min-h-0 overflow-y-auto">
@@ -435,9 +438,14 @@
                 </button>
             </div>
 
-            <button id="regenerateBtn" class="w-full py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded shadow transition-colors">
-                Regenerate Stack
-            </button>
+            <div class="grid grid-cols-[auto_1fr] gap-2">
+                <button id="exportPreviewBtn" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-blue-100 text-xs font-bold rounded border border-blue-900/60 transition-colors">
+                    Preview PNG
+                </button>
+                <button id="regenerateBtn" class="py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded shadow transition-colors">
+                    Regenerate Stack
+                </button>
+            </div>
 
             <div id="statusContainer" class="hidden space-y-2">
                 <div class="flex justify-between text-[10px] text-gray-400 font-mono">
@@ -476,6 +484,7 @@
         let exposurePreviewVisible = false;
         let isProcessing = false;
         let cancelProcessingRequested = false;
+        let isExportingPreviewImage = false;
         let currentSourceType = null;
         let currentSourceDuration = 0;
         let currentSourceSignature = '';
@@ -530,8 +539,11 @@
         const progressBar = document.getElementById('progressBar');
         const cancelProcessingBtn = document.getElementById('cancelProcessingBtn');
         const panelContent = document.getElementById('panel-content');
+        const exportPreviewBtn = document.getElementById('exportPreviewBtn');
         const regenerateBtn = document.getElementById('regenerateBtn');
         const orthoToggle = document.getElementById('orthoToggle');
+        const orthoViewButtons = document.getElementById('orthoViewButtons');
+        const topDownViewBtn = document.getElementById('topDownViewBtn');
         const folderImportBtn = document.getElementById('folderImportBtn');
         const fitSpacingBtn = document.getElementById('fitSpacingBtn');
         const boxToggle = document.getElementById('boxToggle');
@@ -585,6 +597,10 @@
                 openBtn.classList.remove('opacity-0', 'pointer-events-none', 'scale-90');
                 openBtn.classList.add('opacity-100', 'scale-100');
             }
+        }
+
+        function updateOrthoViewButtonVisibility() {
+            orthoViewButtons.classList.toggle('hidden', !orthoToggle.checked);
         }
 
         function updateTrimLabel() {
@@ -814,6 +830,12 @@
             cancelProcessingBtn.addEventListener('click', () => {
                 requestProcessingCancel();
             });
+            exportPreviewBtn.addEventListener('click', () => {
+                exportPreviewImage();
+            });
+            topDownViewBtn.addEventListener('click', () => {
+                setTopDownOrthographicView();
+            });
             
             // Trim Logic
             const beginTrimDrag = (endpoint, event) => {
@@ -1005,15 +1027,18 @@
                 if (useOrtho) {
                     activeCamera = orthoCamera;
                     activeCamera.position.copy(prevCamera.position);
+                    activeCamera.up.set(0, 1, 0);
                     activeCamera.lookAt(controls.target);
                 } else {
                     activeCamera = perspCamera;
                     activeCamera.position.copy(prevCamera.position);
+                    activeCamera.up.set(0, 1, 0);
                     activeCamera.lookAt(controls.target);
                 }
 
                 controls.object = activeCamera;
                 controls.update(); 
+                updateOrthoViewButtonVisibility();
                 onWindowResize(); 
                 renderer.clear(); 
                 markExposureDirty('VIEW CHANGED');
@@ -1143,6 +1168,7 @@
             bindNumberInputToRange(displays.exposureSamples, inputs.exposureSamples);
             bindNumberInputToRange(sequenceStartVal, sequenceStartInput);
 
+            updateOrthoViewButtonVisibility();
             updateModeOptionsVisibility();
             lastManualSpacingCm = parseFloat(inputs.spacing.value);
             applyManualGeometry();
@@ -1528,10 +1554,153 @@
             }
         }
 
+        function downloadBlob(blob, filename) {
+            const objectUrl = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = objectUrl;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(objectUrl);
+        }
+
+        function canvasToPngBlob() {
+            return new Promise((resolve, reject) => {
+                renderer.domElement.toBlob((blob) => {
+                    if (blob) {
+                        resolve(blob);
+                    } else {
+                        reject(new Error('Could not create preview PNG'));
+                    }
+                }, 'image/png');
+            });
+        }
+
+        function createDisplayVolumePreviewCamera() {
+            const width = renderer.domElement.width || window.innerWidth;
+            const height = renderer.domElement.height || window.innerHeight;
+            const aspect = width / Math.max(1, height);
+            const centerY = getDisplayVolumeCenterY();
+            const distance = Math.max(100, TRAVEL_DISTANCE_CM * getDisplayVolumeScale() + 100);
+            const camera = new THREE.OrthographicCamera(
+                -ORTHO_VIEW_SIZE * aspect / 2,
+                ORTHO_VIEW_SIZE * aspect / 2,
+                ORTHO_VIEW_SIZE / 2,
+                -ORTHO_VIEW_SIZE / 2,
+                0.01,
+                1000
+            );
+
+            fitOrthographicCameraToDisplayFootprint(camera, aspect, 1.0);
+            camera.position.set(0, centerY + distance, 0);
+            camera.up.set(0, 0, -1);
+            camera.lookAt(0, centerY, 0);
+            camera.updateMatrixWorld(true);
+            return camera;
+        }
+
+        function renderDisplayVolumePreviewFrame() {
+            const previousBackground = scene.background;
+            const previousAutoClear = renderer.autoClear;
+            const previousClearColor = renderer.getClearColor(new THREE.Color());
+            const previousClearAlpha = renderer.getClearAlpha();
+            const previousVolumeVisible = travelCuboid ? travelCuboid.visible : false;
+            const previousStackVisible = stackGroup.visible;
+            const previousScannerVisible = scannerMesh ? scannerMesh.visible : false;
+            const previousFrameVisibility = frameMeshes.map(mesh => mesh.visible);
+            const previewCamera = createDisplayVolumePreviewCamera();
+
+            try {
+                if (travelCuboid) travelCuboid.visible = false;
+                if (scannerMesh) scannerMesh.visible = false;
+                stackGroup.visible = true;
+                frameMeshes.forEach(mesh => {
+                    mesh.visible = true;
+                });
+
+                scene.background = null;
+                renderer.setClearColor(0x000000, 0);
+                renderer.autoClear = true;
+                renderer.clear();
+                renderer.render(scene, previewCamera);
+            } finally {
+                if (travelCuboid) travelCuboid.visible = previousVolumeVisible;
+                if (scannerMesh) scannerMesh.visible = previousScannerVisible;
+                stackGroup.visible = previousStackVisible;
+                frameMeshes.forEach((mesh, index) => {
+                    mesh.visible = previousFrameVisibility[index];
+                });
+                scene.background = previousBackground;
+                renderer.setClearColor(previousClearColor, previousClearAlpha);
+                renderer.autoClear = previousAutoClear;
+            }
+        }
+
+        async function writePreviewImageToDirectory(directoryHandle, blob) {
+            if (!directoryHandle || !(await verifyReadWritePermission(directoryHandle))) return false;
+
+            const fileHandle = await directoryHandle.getFileHandle('preview.png', { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+            return true;
+        }
+
+        function setPreviewExportBusy(isBusy) {
+            isExportingPreviewImage = isBusy;
+            exportPreviewBtn.disabled = isBusy || isProcessing;
+            exportPreviewBtn.textContent = isBusy ? 'Exporting...' : 'Preview PNG';
+            exportPreviewBtn.classList.toggle('opacity-50', isBusy || isProcessing);
+            exportPreviewBtn.classList.toggle('cursor-not-allowed', isBusy || isProcessing);
+        }
+
+        async function exportPreviewImage() {
+            if (isProcessing || isExportingPreviewImage) return;
+            if (frameMeshes.length === 0) {
+                alert('Load or generate a stack before exporting a preview.');
+                return;
+            }
+
+            let resultLabel = '';
+            setPreviewExportBusy(true);
+
+            try {
+                renderDisplayVolumePreviewFrame();
+                const blob = await canvasToPngBlob();
+
+                if (await writePreviewImageToDirectory(currentSequenceDirectoryHandle, blob)) {
+                    resultLabel = 'Saved';
+                } else {
+                    downloadBlob(blob, 'preview.png');
+                    resultLabel = 'Downloaded';
+                }
+            } catch (error) {
+                console.error(error);
+                alert('Preview export failed.');
+            } finally {
+                setPreviewExportBusy(false);
+                if (resultLabel) {
+                    exportPreviewBtn.textContent = resultLabel;
+                    setTimeout(() => {
+                        if (!isExportingPreviewImage) exportPreviewBtn.textContent = 'Preview PNG';
+                    }, 1200);
+                }
+            }
+        }
+
         // --- Source Processing ---
+
+        function isGeneratedPreviewImageFile(file) {
+            return /(^preview|_preview)\.(avif|bmp|gif|jpe?g|png|webp)$/i.test(file.name);
+        }
 
         function isImageFile(file) {
             return file.type.startsWith('image/') || /\.(avif|bmp|gif|jpe?g|png|webp)$/i.test(file.name);
+        }
+
+        function isSequenceImageFile(file) {
+            return isImageFile(file) && !isGeneratedPreviewImageFile(file);
         }
 
         function isVideoFile(file) {
@@ -1552,7 +1721,7 @@
 
         function getSelectedSource(fileList) {
             const files = Array.from(fileList || []);
-            const imageFiles = files.filter(isImageFile).sort(compareSequenceFiles);
+            const imageFiles = files.filter(isSequenceImageFile).sort(compareSequenceFiles);
             const videoFiles = files.filter(isVideoFile);
             const metadataFile = files.find(isSequenceMetadataFile) || null;
 
@@ -1835,6 +2004,46 @@
             return (getStackStartCm() + (height / 2)) * scale;
         }
 
+        function getDisplayVolumeScale() {
+            return Math.max(0.0001, parseFloat(inputs.scale.value) || 1);
+        }
+
+        function getDisplayVolumeCenterY() {
+            return (TRAVEL_DISTANCE_CM * getDisplayVolumeScale()) / 2;
+        }
+
+        function fitOrthographicCameraToDisplayFootprint(camera, aspect, padding = 1.04) {
+            const scale = getDisplayVolumeScale();
+            const displayWidth = DISPLAY_WIDTH_CM * scale;
+            const displayHeight = DISPLAY_HEIGHT_CM * scale;
+            const frustumHeight = Math.max(displayHeight, displayWidth / Math.max(0.0001, aspect)) * padding;
+            camera.zoom = ORTHO_VIEW_SIZE / Math.max(0.0001, frustumHeight);
+            camera.updateProjectionMatrix();
+        }
+
+        function setTopDownOrthographicView() {
+            const aspect = window.innerWidth / window.innerHeight;
+            const centerY = getDisplayVolumeCenterY();
+            const distance = Math.max(100, TRAVEL_DISTANCE_CM * getDisplayVolumeScale() + 100);
+
+            if (activeCamera !== orthoCamera) {
+                activeCamera = orthoCamera;
+                controls.object = activeCamera;
+                orthoToggle.checked = true;
+                updateOrthoViewButtonVisibility();
+                onWindowResize();
+            }
+
+            fitOrthographicCameraToDisplayFootprint(orthoCamera, aspect);
+            orthoCamera.position.set(0, centerY + distance, 0);
+            orthoCamera.up.set(0, 0, -1);
+            controls.target.set(0, centerY, 0);
+            orthoCamera.lookAt(controls.target);
+            controls.update();
+            renderer.clear();
+            markExposureDirty('VIEW CHANGED');
+        }
+
         function updateControlsTargetForStack() {
             if (stackGroup.children.length === 0) return;
             controls.target.y = getStackWorldCenterY();
@@ -1932,6 +2141,8 @@
             panelContent.classList.add('opacity-50', 'pointer-events-none');
             regenerateBtn.disabled = true;
             regenerateBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            exportPreviewBtn.disabled = true;
+            exportPreviewBtn.classList.add('opacity-50', 'cursor-not-allowed');
             cancelProcessingBtn.disabled = false;
             cancelProcessingBtn.textContent = 'Cancel Processing';
             statusText.textContent = message;
@@ -1960,6 +2171,8 @@
             cancelProcessingBtn.textContent = 'Cancel Processing';
             regenerateBtn.disabled = false;
             regenerateBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            exportPreviewBtn.disabled = false;
+            exportPreviewBtn.classList.remove('opacity-50', 'cursor-not-allowed');
             panelContent.classList.remove('opacity-50', 'pointer-events-none');
         }
 
@@ -2251,7 +2464,7 @@
         async function processImageSequenceSource(files, metadataFile = null) {
             if (!files || files.length === 0 || isProcessing) return;
 
-            const sequenceFiles = Array.from(files).filter(isImageFile).sort(compareSequenceFiles);
+            const sequenceFiles = Array.from(files).filter(isSequenceImageFile).sort(compareSequenceFiles);
             if (sequenceFiles.length === 0) return;
 
             let didBuildStack = false;
