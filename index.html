@@ -531,6 +531,7 @@
         let currentSourceType = null;
         let currentSourceDuration = 0;
         let currentSourceSignature = '';
+        let currentPreviewFilename = 'preview.png';
         let currentSequenceFiles = [];
         let currentSequenceDirectoryHandle = null;
         let batchPreviewQueue = [];
@@ -1871,10 +1872,10 @@
             }
         }
 
-        async function writePreviewImageToDirectory(directoryHandle, blob) {
+        async function writePreviewImageToDirectory(directoryHandle, blob, filename = 'preview.png') {
             if (!directoryHandle || !(await verifyReadWritePermission(directoryHandle))) return false;
 
-            const fileHandle = await directoryHandle.getFileHandle('preview.png', { create: true });
+            const fileHandle = await directoryHandle.getFileHandle(filename, { create: true });
             const writable = await fileHandle.createWritable();
             await writable.write(blob);
             await writable.close();
@@ -1903,10 +1904,10 @@
             try {
                 const blob = await renderDisplayVolumePreviewBlob();
 
-                if (await writePreviewImageToDirectory(currentSequenceDirectoryHandle, blob)) {
+                if (await writePreviewImageToDirectory(currentSequenceDirectoryHandle, blob, currentPreviewFilename)) {
                     resultLabel = 'Saved';
                 } else {
-                    downloadBlob(blob, 'preview.png');
+                    downloadBlob(blob, currentPreviewFilename);
                     resultLabel = 'Downloaded';
                 }
             } catch (error) {
@@ -1926,7 +1927,7 @@
         // --- Source Processing ---
 
         function isGeneratedPreviewImageFile(file) {
-            return /(^preview|_preview)\.(avif|bmp|gif|jpe?g|png|webp)$/i.test(file.name);
+            return /(^preview|[_.]preview)\.(avif|bmp|gif|jpe?g|png|webp)$/i.test(file.name);
         }
 
         function isImageFile(file) {
@@ -1956,7 +1957,7 @@
         function getSelectedSource(fileList) {
             const files = Array.from(fileList || []);
             const imageFiles = files.filter(isSequenceImageFile).sort(compareSequenceFiles);
-            const videoFiles = files.filter(isVideoFile);
+            const videoFiles = files.filter(isVideoFile).sort(compareSequenceFiles);
             const metadataFile = files.find(isSequenceMetadataFile) || null;
 
             if (imageFiles.length > 0) {
@@ -1968,6 +1969,38 @@
             }
 
             return null;
+        }
+
+        function getVideoPreviewFilename(file) {
+            const baseName = (file && file.name ? file.name : 'video').replace(/\.[^/.]+$/, '');
+            return `${baseName}.preview.png`;
+        }
+
+        function getBatchPreviewJobsForFiles(files, directoryHandle, folderName = '') {
+            const source = getSelectedSource(files);
+            if (!source) return [];
+
+            if (source.type === 'sequence') {
+                return [{
+                    type: 'sequence',
+                    directoryHandle,
+                    files: source.files,
+                    metadataFile: source.metadataFile,
+                    outputFilename: 'preview.png',
+                    name: folderName || directoryHandle?.name || 'Image Sequence'
+                }];
+            }
+
+            return Array.from(files)
+                .filter(isVideoFile)
+                .sort(compareSequenceFiles)
+                .map(file => ({
+                    type: 'video',
+                    directoryHandle,
+                    files: [file],
+                    outputFilename: getVideoPreviewFilename(file),
+                    name: file.name
+                }));
         }
 
         async function importSequenceFolder() {
@@ -2002,7 +2035,8 @@
             if (!directoryHandle || isProcessing) return false;
 
             const files = await getFilesFromDirectory(directoryHandle);
-            const source = getSelectedSource(files);
+            const jobs = getBatchPreviewJobsForFiles(files, directoryHandle, directoryHandle.name);
+            const source = jobs[0] || null;
 
             if (!source) {
                 currentSequenceDirectoryHandle = null;
@@ -2036,8 +2070,7 @@
 
         async function directoryHasBatchSource(directoryHandle) {
             const files = await getFilesFromDirectory(directoryHandle);
-            const source = getSelectedSource(files);
-            return Boolean(source && (source.type === 'sequence' || source.type === 'video'));
+            return getBatchPreviewJobsForFiles(files, directoryHandle, directoryHandle.name).length > 0;
         }
 
         async function queueBatchPreviewDirectory(directoryHandle, options = {}) {
@@ -2087,6 +2120,11 @@
 
                 updateBatchPreviewUi(`Scanning ${parentHandle.name}...`);
 
+                scannedCount++;
+                if (await queueBatchPreviewDirectory(parentHandle)) {
+                    addedCount++;
+                }
+
                 for await (const entry of parentHandle.values()) {
                     if (entry.kind !== 'directory') continue;
                     scannedCount++;
@@ -2115,14 +2153,41 @@
             updateBatchPreviewUi('Stopping batch...');
         }
 
-        async function savePreviewImageForDirectory(directoryHandle) {
+        async function savePreviewImageForDirectory(directoryHandle, filename = 'preview.png') {
             setPreviewExportBusy(true);
             try {
                 const blob = await renderDisplayVolumePreviewBlob();
-                return await writePreviewImageToDirectory(directoryHandle, blob);
+                return await writePreviewImageToDirectory(directoryHandle, blob, filename);
             } finally {
                 setPreviewExportBusy(false);
             }
+        }
+
+        async function getBatchPreviewJobs() {
+            const jobs = [];
+
+            for (const item of batchPreviewQueue) {
+                const files = await getFilesFromDirectory(item.handle);
+                const folderJobs = getBatchPreviewJobsForFiles(files, item.handle, item.name);
+                folderJobs.forEach(job => {
+                    jobs.push({
+                        ...job,
+                        folderName: item.name
+                    });
+                });
+            }
+
+            return jobs;
+        }
+
+        async function processBatchPreviewJob(job, options = {}) {
+            currentSequenceDirectoryHandle = job.directoryHandle;
+
+            if (job.type === 'sequence') {
+                return await processImageSequenceSource(job.files, job.metadataFile, options);
+            }
+
+            return await processVideoSource(job.files[0], options);
         }
 
         function captureBatchPreviewSettings() {
@@ -2159,23 +2224,29 @@
 
             let completedCount = 0;
             let failedCount = 0;
-            const totalCount = batchPreviewQueue.length;
+            const jobs = await getBatchPreviewJobs();
+            const totalCount = jobs.length;
             const batchSettings = captureBatchPreviewSettings();
+
+            if (totalCount === 0) {
+                updateBatchPreviewUi('No supported sources found in the queued folders.');
+                return;
+            }
 
             isBatchPreviewRunning = true;
             batchPreviewCancelRequested = false;
-            updateBatchPreviewUi(`Batch ready: ${totalCount} folders.`);
+            updateBatchPreviewUi(`Batch ready: ${totalCount} previews.`);
 
             try {
-                for (let i = 0; i < batchPreviewQueue.length; i++) {
+                for (let i = 0; i < jobs.length; i++) {
                     if (batchPreviewCancelRequested) break;
 
-                    const item = batchPreviewQueue[i];
-                    const label = `Batch ${i + 1}/${totalCount}: ${item.name}`;
+                    const job = jobs[i];
+                    const label = `Batch ${i + 1}/${totalCount}: ${job.name}`;
                     updateBatchPreviewUi(`${label} - loading`);
                     applyBatchPreviewSettings(batchSettings);
 
-                    const loaded = await processSequenceDirectory(item.handle, {
+                    const loaded = await processBatchPreviewJob(job, {
                         preserveFrameCount: true,
                         preserveTrim: true
                     });
@@ -2195,10 +2266,10 @@
                     progressText.textContent = '100%';
                     progressBar.style.width = '100%';
 
-                    const saved = await savePreviewImageForDirectory(item.handle);
+                    const saved = await savePreviewImageForDirectory(job.directoryHandle, job.outputFilename);
                     if (saved) {
                         completedCount++;
-                        updateBatchPreviewUi(`Saved ${completedCount}/${totalCount} previews.`);
+                        updateBatchPreviewUi(`Saved ${completedCount}/${totalCount}: ${job.outputFilename}`);
                     } else {
                         failedCount++;
                         updateBatchPreviewUi(`${label} - permission denied`);
@@ -2819,6 +2890,7 @@
                 currentSourceType = 'video';
                 currentSourceDuration = duration;
                 currentSourceSignature = signature;
+                currentPreviewFilename = getVideoPreviewFilename(file);
                 currentSequenceFiles = [];
                 setTrimRange(duration, isNewSource && !options.preserveTrim);
                 applyManualGeometry();
@@ -2944,6 +3016,7 @@
                 currentSourceType = 'sequence';
                 currentSourceDuration = duration;
                 currentSourceSignature = signature;
+                currentPreviewFilename = 'preview.png';
                 currentSequenceFiles = sequenceFiles;
                 setTrimRange(duration, isNewSource && !options.preserveTrim);
 
