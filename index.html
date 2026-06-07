@@ -1556,13 +1556,14 @@
             const material = new THREE.LineBasicMaterial({
                 color: 0xff4444,
                 transparent: true,
-                opacity: 0.45,
-                depthTest: false,
+                opacity: 0.28,
+                depthTest: true,
                 depthWrite: false
             });
 
             travelCuboid = new THREE.LineSegments(edges, material);
             travelCuboid.position.y = TRAVEL_DISTANCE_CM / 2;
+            travelCuboid.renderOrder = -100;
             scene.add(travelCuboid);
             updateTravelCuboidScale();
         }
