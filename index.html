@@ -424,6 +424,40 @@
                         <input type="range" id="brightThreshold" min="0.1" max="1.0" value="1.0" step="0.01">
                     </div>
                 </div>
+
+                <div class="space-y-3 pb-3 border-b border-gray-800">
+                    <label class="text-xs font-bold uppercase text-gray-500 block">Preview</label>
+
+                    <div>
+                        <label class="text-[10px] text-gray-500 uppercase font-bold">Preview Angle</label>
+                        <select id="previewAngle">
+                            <option value="top" selected>Top Down</option>
+                            <option value="default3d">Default 3D</option>
+                        </select>
+                    </div>
+
+                    <div class="space-y-2 bg-gray-800/40 p-2 rounded border border-gray-800">
+                        <div class="flex items-center justify-between gap-2">
+                            <span class="text-[10px] text-gray-500 uppercase font-bold">Batch</span>
+                            <span id="batchPreviewCount" class="text-[10px] text-blue-300 font-mono">0 folders</span>
+                        </div>
+                        <div class="grid grid-cols-3 gap-1">
+                            <button type="button" id="batchAddFolderBtn" class="px-2 py-1 text-[10px] font-bold text-gray-300 bg-gray-900 hover:bg-gray-800 hover:text-white border border-gray-700 rounded transition-colors">
+                                Add
+                            </button>
+                            <button type="button" id="batchAddParentBtn" class="px-2 py-1 text-[10px] font-bold text-gray-300 bg-gray-900 hover:bg-gray-800 hover:text-white border border-gray-700 rounded transition-colors">
+                                Parent
+                            </button>
+                            <button type="button" id="batchClearBtn" class="px-2 py-1 text-[10px] font-bold text-gray-300 bg-gray-900 hover:bg-gray-800 hover:text-white border border-gray-700 rounded transition-colors">
+                                Clear
+                            </button>
+                        </div>
+                        <button type="button" id="batchRunBtn" class="w-full py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-xs text-white border border-gray-700 transition-colors font-bold">
+                            Run Batch
+                        </button>
+                        <div id="batchPreviewStatus" class="text-[10px] text-gray-500 font-mono truncate min-h-3"></div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -485,11 +519,23 @@
         let isProcessing = false;
         let cancelProcessingRequested = false;
         let isExportingPreviewImage = false;
+        const ORTHO_VIEW_MODES = {
+            FREE: 'free',
+            TOP: 'top'
+        };
+        const PREVIEW_ANGLE_MODES = {
+            TOP: 'top',
+            DEFAULT_3D: 'default3d'
+        };
+        let orthoViewMode = ORTHO_VIEW_MODES.FREE;
         let currentSourceType = null;
         let currentSourceDuration = 0;
         let currentSourceSignature = '';
         let currentSequenceFiles = [];
         let currentSequenceDirectoryHandle = null;
+        let batchPreviewQueue = [];
+        let isBatchPreviewRunning = false;
+        let batchPreviewCancelRequested = false;
 
         const DISPLAY_WIDTH_CM = 53.6;
         const DISPLAY_HEIGHT_CM = 30.15;
@@ -508,6 +554,9 @@
         // Tracking for Light Painting
         const lastCameraPos = new THREE.Vector3();
         const lastCameraQuat = new THREE.Quaternion();
+        const controlStartCameraPos = new THREE.Vector3();
+        const controlStartCameraQuat = new THREE.Quaternion();
+        let controlStartCameraZoom = 1;
         const backgroundColor = new THREE.Color(0x050505);
 
         // Generation Parameters Storage (for visibility calculations)
@@ -541,6 +590,13 @@
         const panelContent = document.getElementById('panel-content');
         const exportPreviewBtn = document.getElementById('exportPreviewBtn');
         const regenerateBtn = document.getElementById('regenerateBtn');
+        const previewAngleSelect = document.getElementById('previewAngle');
+        const batchPreviewCount = document.getElementById('batchPreviewCount');
+        const batchPreviewStatus = document.getElementById('batchPreviewStatus');
+        const batchAddFolderBtn = document.getElementById('batchAddFolderBtn');
+        const batchAddParentBtn = document.getElementById('batchAddParentBtn');
+        const batchClearBtn = document.getElementById('batchClearBtn');
+        const batchRunBtn = document.getElementById('batchRunBtn');
         const orthoToggle = document.getElementById('orthoToggle');
         const orthoViewButtons = document.getElementById('orthoViewButtons');
         const topDownViewBtn = document.getElementById('topDownViewBtn');
@@ -601,6 +657,39 @@
 
         function updateOrthoViewButtonVisibility() {
             orthoViewButtons.classList.toggle('hidden', !orthoToggle.checked);
+        }
+
+        function setBatchPreviewButtonState(button, disabled) {
+            button.disabled = disabled;
+            button.classList.toggle('opacity-50', disabled);
+            button.classList.toggle('cursor-not-allowed', disabled);
+        }
+
+        function updateBatchPreviewUi(message = '') {
+            const supportsDirectoryPicker = 'showDirectoryPicker' in window;
+            const count = batchPreviewQueue.length;
+            const folderLabel = count === 1 ? 'folder' : 'folders';
+            const busy = isProcessing || isExportingPreviewImage;
+            const queueLocked = isBatchPreviewRunning || busy;
+
+            batchPreviewCount.textContent = `${count} ${folderLabel}`;
+            batchPreviewStatus.textContent = message || (supportsDirectoryPicker
+                ? (count > 0 ? `${count} ${folderLabel} queued.` : 'Add source folders to batch export previews.')
+                : 'Batch folders require a browser with directory access.');
+
+            setBatchPreviewButtonState(batchAddFolderBtn, !supportsDirectoryPicker || queueLocked);
+            setBatchPreviewButtonState(batchAddParentBtn, !supportsDirectoryPicker || queueLocked);
+            setBatchPreviewButtonState(batchClearBtn, queueLocked || count === 0);
+
+            batchRunBtn.disabled = !supportsDirectoryPicker || busy || (!isBatchPreviewRunning && count === 0);
+            batchRunBtn.textContent = isBatchPreviewRunning
+                ? (batchPreviewCancelRequested ? 'Stopping...' : 'Stop Batch')
+                : (count > 0 ? `Run Batch (${count})` : 'Run Batch');
+            batchRunBtn.className = isBatchPreviewRunning
+                ? 'w-full py-1.5 bg-amber-600 hover:bg-amber-500 rounded text-xs text-white border border-amber-500 transition-colors font-bold'
+                : batchRunBtn.disabled
+                    ? 'w-full py-1.5 bg-gray-900/70 rounded text-xs text-gray-500 border border-gray-700 transition-colors font-bold opacity-50 cursor-not-allowed'
+                    : 'w-full py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs text-white border border-blue-500 transition-colors font-bold';
         }
 
         function updateTrimLabel() {
@@ -827,6 +916,24 @@
             if (!('showDirectoryPicker' in window)) {
                 folderImportBtn.classList.add('hidden');
             }
+            batchAddFolderBtn.addEventListener('click', () => {
+                addBatchPreviewFolderFromPicker();
+            });
+            batchAddParentBtn.addEventListener('click', () => {
+                addBatchPreviewParentFromPicker();
+            });
+            batchClearBtn.addEventListener('click', () => {
+                if (isBatchPreviewRunning) return;
+                batchPreviewQueue = [];
+                updateBatchPreviewUi('Batch queue cleared.');
+            });
+            batchRunBtn.addEventListener('click', () => {
+                if (isBatchPreviewRunning) {
+                    requestBatchPreviewCancel();
+                } else {
+                    runBatchPreviewQueue();
+                }
+            });
             cancelProcessingBtn.addEventListener('click', () => {
                 requestProcessingCancel();
             });
@@ -840,21 +947,31 @@
             // Trim Logic
             const beginTrimDrag = (endpoint, event) => {
                 event.preventDefault();
-                trimRangeControl.setPointerCapture(event.pointerId);
+                const pointerId = event.pointerId;
+                let isDragging = true;
+                trimRangeControl.setPointerCapture(pointerId);
                 setTrimEndpoint(endpoint, getTrimValueFromPointer(event.clientX));
 
                 const onMove = (moveEvent) => {
+                    if (moveEvent.pointerId !== pointerId) return;
                     setTrimEndpoint(endpoint, getTrimValueFromPointer(moveEvent.clientX));
                 };
                 const onEnd = () => {
+                    if (!isDragging) return;
+                    isDragging = false;
                     trimRangeControl.removeEventListener('pointermove', onMove);
                     trimRangeControl.removeEventListener('pointerup', onEnd);
                     trimRangeControl.removeEventListener('pointercancel', onEnd);
+                    trimRangeControl.removeEventListener('lostpointercapture', onEnd);
+                    if (trimRangeControl.hasPointerCapture(pointerId)) {
+                        trimRangeControl.releasePointerCapture(pointerId);
+                    }
                 };
 
                 trimRangeControl.addEventListener('pointermove', onMove);
                 trimRangeControl.addEventListener('pointerup', onEnd);
                 trimRangeControl.addEventListener('pointercancel', onEnd);
+                trimRangeControl.addEventListener('lostpointercapture', onEnd);
             };
 
             trimStartHandle.addEventListener('pointerdown', (event) => beginTrimDrag('start', event));
@@ -908,10 +1025,23 @@
             });
 
             controls.addEventListener('end', () => {
+                if (activeCamera === orthoCamera && orthoViewMode === ORTHO_VIEW_MODES.TOP) {
+                    const cameraMoved = activeCamera.position.distanceTo(controlStartCameraPos) > 0.001
+                        || activeCamera.quaternion.angleTo(controlStartCameraQuat) > 0.001
+                        || Math.abs(activeCamera.zoom - controlStartCameraZoom) > 0.001;
+
+                    if (cameraMoved) {
+                        orthoViewMode = ORTHO_VIEW_MODES.FREE;
+                    }
+                }
                 markExposureDirty('VIEW CHANGED');
             });
 
             controls.addEventListener('start', () => {
+                controlStartCameraPos.copy(activeCamera.position);
+                controlStartCameraQuat.copy(activeCamera.quaternion);
+                controlStartCameraZoom = activeCamera.zoom || 1;
+
                 if (exposurePreviewVisible) {
                     markExposureDirty('VIEW CHANGED');
                 }
@@ -1023,6 +1153,7 @@
             orthoToggle.addEventListener('change', (e) => {
                 const useOrtho = e.target.checked;
                 const prevCamera = activeCamera;
+                orthoViewMode = ORTHO_VIEW_MODES.FREE;
                 
                 if (useOrtho) {
                     activeCamera = orthoCamera;
@@ -1092,7 +1223,11 @@
                 stackGroup.scale.setScalar(val);
                 if(scannerMesh) scannerMesh.scale.setScalar(val);
                 updateTravelCuboidScale();
-                updateControlsTargetForStack();
+                if (activeCamera === orthoCamera && orthoViewMode === ORTHO_VIEW_MODES.TOP) {
+                    applyTopDownOrthographicView();
+                } else {
+                    updateControlsTargetForStack();
+                }
                 updateVisibility();
                 markExposureDirty('GEOMETRY CHANGED');
             });
@@ -1169,6 +1304,7 @@
             bindNumberInputToRange(sequenceStartVal, sequenceStartInput);
 
             updateOrthoViewButtonVisibility();
+            updateBatchPreviewUi();
             updateModeOptionsVisibility();
             lastManualSpacingCm = parseFloat(inputs.spacing.value);
             applyManualGeometry();
@@ -1565,42 +1701,139 @@
             URL.revokeObjectURL(objectUrl);
         }
 
-        function canvasToPngBlob() {
+        function canvasToPngBlob(canvas, errorMessage = 'Could not create preview PNG') {
             return new Promise((resolve, reject) => {
-                renderer.domElement.toBlob((blob) => {
+                canvas.toBlob((blob) => {
                     if (blob) {
                         resolve(blob);
                     } else {
-                        reject(new Error('Could not create preview PNG'));
+                        reject(new Error(errorMessage));
                     }
                 }, 'image/png');
             });
         }
 
-        function createDisplayVolumePreviewCamera() {
-            const width = renderer.domElement.width || window.innerWidth;
-            const height = renderer.domElement.height || window.innerHeight;
+        function getPreviewAngleMode() {
+            const mode = previewAngleSelect.value;
+            return Object.values(PREVIEW_ANGLE_MODES).includes(mode)
+                ? mode
+                : PREVIEW_ANGLE_MODES.TOP;
+        }
+
+        function getPreviewViewBasis(mode) {
+            const direction = mode === PREVIEW_ANGLE_MODES.DEFAULT_3D
+                ? new THREE.Vector3(1, 0.72, 1).normalize()
+                : new THREE.Vector3(0, 1, 0);
+            const upHint = mode === PREVIEW_ANGLE_MODES.DEFAULT_3D
+                ? new THREE.Vector3(0, 1, 0)
+                : new THREE.Vector3(0, 0, -1);
+            const vertical = upHint
+                .clone()
+                .addScaledVector(direction, -upHint.dot(direction))
+                .normalize();
+            const horizontal = new THREE.Vector3().crossVectors(vertical, direction).normalize();
+
+            return {
+                direction,
+                up: vertical,
+                horizontal,
+                vertical
+            };
+        }
+
+        function getBoxCorners(box) {
+            return [
+                new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+                new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+                new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+                new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+                new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+                new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+                new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+                new THREE.Vector3(box.max.x, box.max.y, box.max.z)
+            ];
+        }
+
+        function getProjectedRange(points, axis) {
+            let min = Infinity;
+            let max = -Infinity;
+
+            points.forEach(point => {
+                const value = point.dot(axis);
+                min = Math.min(min, value);
+                max = Math.max(max, value);
+            });
+
+            return {
+                min,
+                max,
+                span: Math.max(0, max - min)
+            };
+        }
+
+        function getPreviewFitBox() {
+            const scale = getDisplayVolumeScale();
+            const halfWidth = (DISPLAY_WIDTH_CM * scale) / 2;
+            const halfDepth = (DISPLAY_HEIGHT_CM * scale) / 2;
+            const box = new THREE.Box3();
+
+            if (frameMeshes.length > 0) {
+                const startY = getStackStartCm() * scale;
+                const height = getStackHeightCm(frameMeshes.length, getCurrentSpacingCm()) * scale;
+                const endY = startY + height;
+                box.min.set(-halfWidth, Math.min(startY, endY), -halfDepth);
+                box.max.set(halfWidth, Math.max(startY, endY), halfDepth);
+            } else {
+                box.min.set(-halfWidth, 0, -halfDepth);
+                box.max.set(halfWidth, TRAVEL_DISTANCE_CM * scale, halfDepth);
+            }
+
+            if (Math.abs(box.max.y - box.min.y) < 0.0001) {
+                const centerY = (box.min.y + box.max.y) / 2;
+                box.min.y = centerY - 0.00005;
+                box.max.y = centerY + 0.00005;
+            }
+
+            return box;
+        }
+
+        function createPreviewExportCamera(mode = getPreviewAngleMode()) {
+            const width = Math.max(1, renderer.domElement.width || window.innerWidth || 1);
+            const height = Math.max(1, renderer.domElement.height || window.innerHeight || 1);
             const aspect = width / Math.max(1, height);
-            const centerY = getDisplayVolumeCenterY();
-            const distance = Math.max(100, TRAVEL_DISTANCE_CM * getDisplayVolumeScale() + 100);
+            const box = getPreviewFitBox();
+            const corners = getBoxCorners(box);
+            const { direction, up, horizontal, vertical } = getPreviewViewBasis(mode);
+            const horizontalRange = getProjectedRange(corners, horizontal);
+            const verticalRange = getProjectedRange(corners, vertical);
+            const depthRange = getProjectedRange(corners, direction);
+            const horizontalSpan = Math.max(0.0001, horizontalRange.span);
+            const verticalSpan = Math.max(0.0001, verticalRange.span);
+            const frustumHeight = Math.max(verticalSpan, horizontalSpan / Math.max(0.0001, aspect));
+            const frustumWidth = frustumHeight * aspect;
+            const target = new THREE.Vector3()
+                .addScaledVector(horizontal, (horizontalRange.min + horizontalRange.max) / 2)
+                .addScaledVector(vertical, (verticalRange.min + verticalRange.max) / 2)
+                .addScaledVector(direction, (depthRange.min + depthRange.max) / 2);
+            const distance = Math.max(100, depthRange.span + TRAVEL_DISTANCE_CM * getDisplayVolumeScale() + 100);
             const camera = new THREE.OrthographicCamera(
-                -ORTHO_VIEW_SIZE * aspect / 2,
-                ORTHO_VIEW_SIZE * aspect / 2,
-                ORTHO_VIEW_SIZE / 2,
-                -ORTHO_VIEW_SIZE / 2,
+                -frustumWidth / 2,
+                frustumWidth / 2,
+                frustumHeight / 2,
+                -frustumHeight / 2,
                 0.01,
                 1000
             );
 
-            fitOrthographicCameraToDisplayFootprint(camera, aspect, 1.0);
-            camera.position.set(0, centerY + distance, 0);
-            camera.up.set(0, 0, -1);
-            camera.lookAt(0, centerY, 0);
+            camera.position.copy(target).addScaledVector(direction, distance);
+            camera.up.copy(up);
+            camera.lookAt(target);
+            camera.updateProjectionMatrix();
             camera.updateMatrixWorld(true);
             return camera;
         }
 
-        function renderDisplayVolumePreviewFrame() {
+        async function renderDisplayVolumePreviewBlob() {
             const previousBackground = scene.background;
             const previousAutoClear = renderer.autoClear;
             const previousClearColor = renderer.getClearColor(new THREE.Color());
@@ -1609,7 +1842,7 @@
             const previousStackVisible = stackGroup.visible;
             const previousScannerVisible = scannerMesh ? scannerMesh.visible : false;
             const previousFrameVisibility = frameMeshes.map(mesh => mesh.visible);
-            const previewCamera = createDisplayVolumePreviewCamera();
+            const previewCamera = createPreviewExportCamera();
 
             try {
                 if (travelCuboid) travelCuboid.visible = false;
@@ -1624,6 +1857,7 @@
                 renderer.autoClear = true;
                 renderer.clear();
                 renderer.render(scene, previewCamera);
+                return await canvasToPngBlob(renderer.domElement);
             } finally {
                 if (travelCuboid) travelCuboid.visible = previousVolumeVisible;
                 if (scannerMesh) scannerMesh.visible = previousScannerVisible;
@@ -1653,6 +1887,7 @@
             exportPreviewBtn.textContent = isBusy ? 'Exporting...' : 'Preview PNG';
             exportPreviewBtn.classList.toggle('opacity-50', isBusy || isProcessing);
             exportPreviewBtn.classList.toggle('cursor-not-allowed', isBusy || isProcessing);
+            updateBatchPreviewUi();
         }
 
         async function exportPreviewImage() {
@@ -1666,8 +1901,7 @@
             setPreviewExportBusy(true);
 
             try {
-                renderDisplayVolumePreviewFrame();
-                const blob = await canvasToPngBlob();
+                const blob = await renderDisplayVolumePreviewBlob();
 
                 if (await writePreviewImageToDirectory(currentSequenceDirectoryHandle, blob)) {
                     resultLabel = 'Saved';
@@ -1764,23 +1998,222 @@
             return files;
         }
 
-        async function processSequenceDirectory(directoryHandle) {
-            if (!directoryHandle || isProcessing) return;
+        async function processSequenceDirectory(directoryHandle, options = {}) {
+            if (!directoryHandle || isProcessing) return false;
 
             const files = await getFilesFromDirectory(directoryHandle);
             const source = getSelectedSource(files);
 
-            if (!source || source.type !== 'sequence') {
+            if (!source) {
                 currentSequenceDirectoryHandle = null;
                 statusContainer.classList.remove('hidden');
-                statusText.textContent = 'NO IMAGE SEQUENCE';
+                statusText.textContent = 'NO SOURCE FOUND';
                 progressText.textContent = '0%';
                 progressBar.style.width = '0%';
-                return;
+                return false;
             }
 
             currentSequenceDirectoryHandle = directoryHandle;
-            await processImageSequenceSource(source.files, source.metadataFile);
+            if (source.type === 'sequence') {
+                return await processImageSequenceSource(source.files, source.metadataFile, options);
+            }
+
+            return await processVideoSource(source.files[0], options);
+        }
+
+        async function isSameDirectoryHandle(a, b) {
+            if (!a || !b) return false;
+            if (a === b) return true;
+            if ('isSameEntry' in a) {
+                try {
+                    return await a.isSameEntry(b);
+                } catch (error) {
+                    return false;
+                }
+            }
+            return a.name === b.name;
+        }
+
+        async function directoryHasBatchSource(directoryHandle) {
+            const files = await getFilesFromDirectory(directoryHandle);
+            const source = getSelectedSource(files);
+            return Boolean(source && (source.type === 'sequence' || source.type === 'video'));
+        }
+
+        async function queueBatchPreviewDirectory(directoryHandle, options = {}) {
+            if (!directoryHandle) return false;
+
+            for (const item of batchPreviewQueue) {
+                if (await isSameDirectoryHandle(item.handle, directoryHandle)) {
+                    return false;
+                }
+            }
+
+            if (options.validate !== false && !(await directoryHasBatchSource(directoryHandle))) {
+                return false;
+            }
+
+            batchPreviewQueue.push({
+                handle: directoryHandle,
+                name: directoryHandle.name || `Folder ${batchPreviewQueue.length + 1}`
+            });
+            return true;
+        }
+
+        async function addBatchPreviewFolderFromPicker() {
+            if (!('showDirectoryPicker' in window) || isBatchPreviewRunning || isProcessing || isExportingPreviewImage) return;
+
+            try {
+                const directoryHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+                const added = await queueBatchPreviewDirectory(directoryHandle);
+                updateBatchPreviewUi(added
+                    ? `Queued ${directoryHandle.name}.`
+                    : `${directoryHandle.name} is already queued or has no supported source.`);
+            } catch (error) {
+                if (error && error.name !== 'AbortError') {
+                    console.error(error);
+                    updateBatchPreviewUi('Could not add that folder.');
+                }
+            }
+        }
+
+        async function addBatchPreviewParentFromPicker() {
+            if (!('showDirectoryPicker' in window) || isBatchPreviewRunning || isProcessing || isExportingPreviewImage) return;
+
+            try {
+                const parentHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+                let scannedCount = 0;
+                let addedCount = 0;
+
+                updateBatchPreviewUi(`Scanning ${parentHandle.name}...`);
+
+                for await (const entry of parentHandle.values()) {
+                    if (entry.kind !== 'directory') continue;
+                    scannedCount++;
+                    updateBatchPreviewUi(`Scanning ${entry.name}...`);
+                    if (await queueBatchPreviewDirectory(entry)) {
+                        addedCount++;
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+
+                updateBatchPreviewUi(`Added ${addedCount}/${scannedCount} source folders from ${parentHandle.name}.`);
+            } catch (error) {
+                if (error && error.name !== 'AbortError') {
+                    console.error(error);
+                    updateBatchPreviewUi('Could not scan that parent folder.');
+                }
+            }
+        }
+
+        function requestBatchPreviewCancel() {
+            if (!isBatchPreviewRunning) return;
+            batchPreviewCancelRequested = true;
+            if (isProcessing) {
+                requestProcessingCancel();
+            }
+            updateBatchPreviewUi('Stopping batch...');
+        }
+
+        async function savePreviewImageForDirectory(directoryHandle) {
+            setPreviewExportBusy(true);
+            try {
+                const blob = await renderDisplayVolumePreviewBlob();
+                return await writePreviewImageToDirectory(directoryHandle, blob);
+            } finally {
+                setPreviewExportBusy(false);
+            }
+        }
+
+        function captureBatchPreviewSettings() {
+            return {
+                frameCount: parseInt(inputs.count.value),
+                trimStart: parseFloat(trimStartInput.value),
+                trimEnd: parseFloat(trimEndInput.value)
+            };
+        }
+
+        function applyBatchPreviewSettings(settings) {
+            if (!settings) return;
+
+            if (Number.isFinite(settings.frameCount)) {
+                inputs.count.value = settings.frameCount;
+                displays.count.value = settings.frameCount;
+            }
+
+            if (Number.isFinite(settings.trimStart)) {
+                trimStartInput.value = settings.trimStart;
+            }
+            if (Number.isFinite(settings.trimEnd)) {
+                trimEndInput.value = settings.trimEnd;
+            }
+            updateTrimLabel();
+        }
+
+        async function runBatchPreviewQueue() {
+            if (isBatchPreviewRunning || isProcessing || isExportingPreviewImage) return;
+            if (batchPreviewQueue.length === 0) {
+                alert('Add one or more source folders before running a batch.');
+                return;
+            }
+
+            let completedCount = 0;
+            let failedCount = 0;
+            const totalCount = batchPreviewQueue.length;
+            const batchSettings = captureBatchPreviewSettings();
+
+            isBatchPreviewRunning = true;
+            batchPreviewCancelRequested = false;
+            updateBatchPreviewUi(`Batch ready: ${totalCount} folders.`);
+
+            try {
+                for (let i = 0; i < batchPreviewQueue.length; i++) {
+                    if (batchPreviewCancelRequested) break;
+
+                    const item = batchPreviewQueue[i];
+                    const label = `Batch ${i + 1}/${totalCount}: ${item.name}`;
+                    updateBatchPreviewUi(`${label} - loading`);
+                    applyBatchPreviewSettings(batchSettings);
+
+                    const loaded = await processSequenceDirectory(item.handle, {
+                        preserveFrameCount: true,
+                        preserveTrim: true
+                    });
+                    if (!loaded) {
+                        failedCount++;
+                        if (batchPreviewCancelRequested) break;
+                        updateBatchPreviewUi(`${label} - skipped`);
+                        await new Promise(resolve => setTimeout(resolve, 0));
+                        continue;
+                    }
+
+                    if (batchPreviewCancelRequested) break;
+
+                    updateBatchPreviewUi(`${label} - saving preview`);
+                    statusContainer.classList.remove('hidden');
+                    statusText.textContent = 'SAVING PREVIEW...';
+                    progressText.textContent = '100%';
+                    progressBar.style.width = '100%';
+
+                    const saved = await savePreviewImageForDirectory(item.handle);
+                    if (saved) {
+                        completedCount++;
+                        updateBatchPreviewUi(`Saved ${completedCount}/${totalCount} previews.`);
+                    } else {
+                        failedCount++;
+                        updateBatchPreviewUi(`${label} - permission denied`);
+                    }
+
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+            } finally {
+                const canceled = batchPreviewCancelRequested;
+                isBatchPreviewRunning = false;
+                batchPreviewCancelRequested = false;
+                updateBatchPreviewUi(canceled
+                    ? `Batch stopped after ${completedCount}/${totalCount}.`
+                    : `Batch complete: ${completedCount}/${totalCount} saved${failedCount ? `, ${failedCount} failed` : ''}.`);
+            }
         }
 
         function getDefaultSequenceMetadata() {
@@ -2021,25 +2454,39 @@
             camera.updateProjectionMatrix();
         }
 
-        function setTopDownOrthographicView() {
+        function updateOrthographicCameraFrustum(aspect) {
+            orthoCamera.left = -ORTHO_VIEW_SIZE * aspect / 2;
+            orthoCamera.right = ORTHO_VIEW_SIZE * aspect / 2;
+            orthoCamera.top = ORTHO_VIEW_SIZE / 2;
+            orthoCamera.bottom = -ORTHO_VIEW_SIZE / 2;
+            orthoCamera.updateProjectionMatrix();
+        }
+
+        function applyTopDownOrthographicView() {
             const aspect = window.innerWidth / window.innerHeight;
             const centerY = getDisplayVolumeCenterY();
             const distance = Math.max(100, TRAVEL_DISTANCE_CM * getDisplayVolumeScale() + 100);
 
-            if (activeCamera !== orthoCamera) {
-                activeCamera = orthoCamera;
-                controls.object = activeCamera;
-                orthoToggle.checked = true;
-                updateOrthoViewButtonVisibility();
-                onWindowResize();
-            }
-
+            updateOrthographicCameraFrustum(aspect);
             fitOrthographicCameraToDisplayFootprint(orthoCamera, aspect);
             orthoCamera.position.set(0, centerY + distance, 0);
             orthoCamera.up.set(0, 0, -1);
             controls.target.set(0, centerY, 0);
             orthoCamera.lookAt(controls.target);
             controls.update();
+        }
+
+        function setTopDownOrthographicView() {
+            orthoViewMode = ORTHO_VIEW_MODES.TOP;
+
+            if (activeCamera !== orthoCamera) {
+                activeCamera = orthoCamera;
+                controls.object = activeCamera;
+                orthoToggle.checked = true;
+                updateOrthoViewButtonVisibility();
+            }
+
+            applyTopDownOrthographicView();
             renderer.clear();
             markExposureDirty('VIEW CHANGED');
         }
@@ -2148,9 +2595,14 @@
             statusText.textContent = message;
             progressText.textContent = '0%';
             progressBar.style.width = '0%';
+            updateBatchPreviewUi();
         }
 
         function requestProcessingCancel() {
+            if (isBatchPreviewRunning) {
+                batchPreviewCancelRequested = true;
+                updateBatchPreviewUi('Stopping batch...');
+            }
             if (!isProcessing) return;
             cancelProcessingRequested = true;
             cancelProcessingBtn.disabled = true;
@@ -2174,6 +2626,7 @@
             exportPreviewBtn.disabled = false;
             exportPreviewBtn.classList.remove('opacity-50', 'cursor-not-allowed');
             panelContent.classList.remove('opacity-50', 'pointer-events-none');
+            updateBatchPreviewUi();
         }
 
         function handleProcessingError(error, label) {
@@ -2324,8 +2777,8 @@
             }
         }
 
-        async function processVideoSource(file) {
-            if (!file || isProcessing) return;
+        async function processVideoSource(file, options = {}) {
+            if (!file || isProcessing) return false;
 
             let video = null;
             let objectUrl = '';
@@ -2367,7 +2820,7 @@
                 currentSourceDuration = duration;
                 currentSourceSignature = signature;
                 currentSequenceFiles = [];
-                setTrimRange(duration, isNewSource);
+                setTrimRange(duration, isNewSource && !options.preserveTrim);
                 applyManualGeometry();
                 
                 // Get Trim Values
@@ -2459,13 +2912,15 @@
                     });
                 }
             }
+
+            return didBuildStack;
         }
 
-        async function processImageSequenceSource(files, metadataFile = null) {
-            if (!files || files.length === 0 || isProcessing) return;
+        async function processImageSequenceSource(files, metadataFile = null, options = {}) {
+            if (!files || files.length === 0 || isProcessing) return false;
 
             const sequenceFiles = Array.from(files).filter(isSequenceImageFile).sort(compareSequenceFiles);
-            if (sequenceFiles.length === 0) return;
+            if (sequenceFiles.length === 0) return false;
 
             let didBuildStack = false;
             let extractedFrames = [];
@@ -2490,7 +2945,7 @@
                 currentSourceDuration = duration;
                 currentSourceSignature = signature;
                 currentSequenceFiles = sequenceFiles;
-                setTrimRange(duration, isNewSource);
+                setTrimRange(duration, isNewSource && !options.preserveTrim);
 
                 updateFrameSliderLimits();
 
@@ -2500,7 +2955,7 @@
                     throw new Error('No images were selected for the current trim range');
                 }
 
-                if (isNewSource) {
+                if (isNewSource && !options.preserveFrameCount) {
                     inputs.count.value = trimmedFiles.length;
                 }
 
@@ -2574,6 +3029,8 @@
                     });
                 }
             }
+
+            return didBuildStack;
         }
 
         function clearStack() {
@@ -2707,13 +3164,14 @@
             perspCamera.aspect = aspect;
             perspCamera.updateProjectionMatrix();
 
-            orthoCamera.left = -ORTHO_VIEW_SIZE * aspect / 2;
-            orthoCamera.right = ORTHO_VIEW_SIZE * aspect / 2;
-            orthoCamera.top = ORTHO_VIEW_SIZE / 2;
-            orthoCamera.bottom = -ORTHO_VIEW_SIZE / 2;
-            orthoCamera.updateProjectionMatrix();
-
             renderer.setSize(window.innerWidth, window.innerHeight);
+
+            if (activeCamera === orthoCamera && orthoViewMode === ORTHO_VIEW_MODES.TOP) {
+                applyTopDownOrthographicView();
+            } else {
+                updateOrthographicCameraFrustum(aspect);
+            }
+
             markExposureDirty('VIEW CHANGED');
         }
 
@@ -2768,6 +3226,8 @@
 
         function animate(time = performance.now()) {
             requestAnimationFrame(animate);
+            if (isExportingPreviewImage) return;
+
             const deltaSeconds = playback.lastTime
                 ? Math.min((time - playback.lastTime) / 1000, 0.1)
                 : 0;
