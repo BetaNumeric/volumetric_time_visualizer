@@ -1,0 +1,14 @@
+{
+  "name": "volumetric-time-visualizer",
+  "private": true,
+  "scripts": {
+    "test": "node tests/run.cjs",
+    "test:browser": "python tests/browser_regression.py",
+    "build:css": "tailwindcss -i styles/tailwind.input.css -o styles/tailwind.css --minify",
+    "build": "npm run build:css",
+    "check:assets": "node scripts/check-assets.cjs"
+  },
+  "devDependencies": {
+    "tailwindcss": "3.4.17"
+  }
+}
