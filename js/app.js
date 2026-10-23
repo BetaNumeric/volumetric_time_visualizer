@@ -53,7 +53,6 @@
         const DISPLAY_HEIGHT_CM = 30.15;
         const DISPLAY_ASPECT_RATIO = DISPLAY_WIDTH_CM / DISPLAY_HEIGHT_CM;
         const TRAVEL_DISTANCE_CM = 48.0;
-        const PREVIEW_MEMORY_BUDGET = ((navigator.deviceMemory || 8) <= 4 ? 128 : 256) * 1024 * 1024;
 
         let lastManualSpacingCm = 0.1;
         const sourceGeometry = {
@@ -1691,7 +1690,7 @@
 
         function getFrameTexturePlan(frameCount) {
             return VolumeCore.texturePlan(frameCount, parseInt(resolutionSelect.value),
-                DISPLAY_ASPECT_RATIO, PREVIEW_MEMORY_BUDGET, renderer?.capabilities.maxTextureSize);
+                DISPLAY_ASPECT_RATIO, renderer?.capabilities.maxTextureSize);
         }
 
         function updateMemoryEstimate() {
@@ -1699,7 +1698,7 @@
             const plan = getFrameTexturePlan(count);
             document.getElementById('memoryEstimate').textContent =
                 `${count} frames · ${plan.width} × ${plan.height} · ~${Math.ceil(plan.estimatedBytes / 1048576)} MiB` +
-                (plan.downscaled ? ' · resolution reduced to fit memory budget' : '');
+                (plan.downscaled ? ' · resolution limited by GPU texture size' : '');
         }
 
         function applySourceGeometry(metadata, frameCount, previousGeometry) {

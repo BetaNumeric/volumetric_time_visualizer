@@ -28,13 +28,15 @@ exercise the real WebGL context-loss lifecycle. The optional full example
 sequence also prints a headless rendering profile. Those timings describe
 the test host, not mobile hardware or the installation.
 
-For the supplied 654-frame sequence on the Windows test host, the profile
-recorded 654 draw calls and roughly 254 MiB of estimated texture/canvas storage
-at 301 × 169. Median render time, including GPU completion over three warmed
+Before automatic memory downscaling was removed, the supplied 654-frame sequence
+on the Windows test host recorded 654 draw calls and roughly 254 MiB of estimated
+texture/canvas storage at 301 × 169. Median render time, including GPU completion over three warmed
 frames, was 1.7–1.8 ms in Chrome, 52 ms in Firefox, and 3 ms in Playwright
 WebKit. These small headless samples are diagnostic observations, not browser
 rankings or on-device benchmarks. Static views submit no further frames while
-idle. Profiling reads and `gl.finish()` are confined to tests.
+idle. Those historical timings apply to the reduced 301 × 169 textures, not
+the current Medium setting of 800 × 450. Run the browser suite to profile the
+selected full resolution. Profiling reads and `gl.finish()` are confined to tests.
 
 Texture arrays could reduce draw calls on WebGL 2 (the test host supports
 2,048 layers), but an additional array alongside the per-frame textures would

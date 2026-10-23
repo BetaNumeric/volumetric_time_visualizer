@@ -272,6 +272,26 @@ with sync_playwright() as playwright:
     assert page.evaluate('frameMeshes.length===expectedFrames')
     passed('graphics context recovers without losing loaded frames')
 
+    quality = page.evaluate('''async()=>{
+        resolutionSelect.value='800';
+        const canvas=document.createElement('canvas');canvas.width=800;canvas.height=450;
+        const ctx=canvas.getContext('2d');ctx.fillStyle='black';ctx.fillRect(0,0,800,450);
+        ctx.fillStyle='white';for(let x=0;x<800;x+=2)ctx.fillRect(x,0,1,450);
+        const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+        const files=Array.from({length:750},(_,i)=>new File([blob],`detail${String(i).padStart(4,'0')}.png`,
+            {type:'image/png',lastModified:1}));
+        if(!await processImageSequenceSource(files))throw new Error(statusText.textContent);
+        const images=frameMeshes.map(mesh=>mesh.material.uniforms.map.value.image);
+        const row=images[749].getContext('2d').getImageData(0,0,4,1).data;
+        exposurePreviewVisible=false;playback.mode='static';updateVisibility();
+        renderer.render(scene,activeCamera);renderer.getContext().finish();
+        return {count:images.length,fullResolution:images.every(image=>image.width===800&&image.height===450),
+            detail:[row[0],row[4],row[8],row[12]],memory:document.getElementById('memoryEstimate').textContent};
+    }''')
+    assert quality['count'] == 750 and quality['fullResolution']
+    assert quality['detail'] == [255, 0, 255, 0], quality
+    passed('750-frame Medium stack preserves resolution and single-pixel detail', quality)
+
     video = ROOT / 'examples' / 'particle_sim_rectangle.mp4'
     if video.exists():
         page.evaluate("inputs.count.max='2048';inputs.count.value='4'")
@@ -298,10 +318,11 @@ with sync_playwright() as playwright:
         page.locator('#videoInput').set_input_files([str(file) for file in files])
         page.wait_for_function("!isProcessing && currentSourceType === 'sequence' && frameMeshes.length > 30", timeout=60000)
         result = page.evaluate('''()=>({count:frameMeshes.length,width:frameMeshes[0].material.uniforms.map.value.image.width,
+            textureHeight:frameMeshes[0].material.uniforms.map.value.image.height,
             height:sourceGeometry.volumeHeightCm,start:sourceGeometry.startCm,memory:document.getElementById('memoryEstimate').textContent})''')
-        assert result['count'] == len(files)-1 and result['width'] < 800
+        assert result['count'] == len(files)-1 and result['width'] == 800 and result['textureHeight'] == 450
         assert abs(result['height'] - 47.55) < 1e-6 and abs(result['start'] - 0.23) < 1e-6
-        passed('full example sequence loads within the preview budget', result)
+        passed('full example sequence retains Medium resolution', result)
 
         profile = page.evaluate('''()=>{
             exposurePreviewVisible=false;playback.mode='static';updateVisibility();

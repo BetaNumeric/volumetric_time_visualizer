@@ -35,14 +35,15 @@
         return result;
     }
 
-    function texturePlan(frameCount, maxSide, aspect, budgetBytes, maxTextureSize = Infinity) {
+    function texturePlan(frameCount, maxSide, aspect, maxTextureSize = Infinity) {
         const count = Math.max(1, Math.floor(frameCount));
         const requestedWidth = aspect >= 1 ? maxSide : Math.round(maxSide * aspect);
         const requestedHeight = aspect >= 1 ? Math.round(maxSide / aspect) : maxSide;
         // One canvas and one GPU copy per frame, plus the extraction canvas.
         const bytesPerPixel = 4 * (2 * count + 1);
-        const factor = Math.min(1, maxTextureSize / Math.max(requestedWidth, requestedHeight),
-            Math.sqrt(budgetBytes / (requestedWidth * requestedHeight * bytesPerPixel)));
+        // Keep the selected image quality regardless of stack size or available RAM.
+        // Only the GPU's hard texture-size limit can reduce the requested dimensions.
+        const factor = Math.min(1, maxTextureSize / Math.max(requestedWidth, requestedHeight));
         const width = Math.max(1, Math.floor(requestedWidth * factor));
         const height = Math.max(1, Math.floor(requestedHeight * factor));
         return { width, height, estimatedBytes: width * height * bytesPerPixel,

@@ -22,18 +22,26 @@ test('editing metadata preserves controller settings and updates existing aliase
         volume_height_cm: 24, offset_cm: 12, height_cm: 24, start_cm: 12 });
 });
 
-test('texture plans stay within memory and hardware limits, including large sources', () => {
-    const budget = 512 * 1024 * 1024;
-    for (const count of [1, 30, 660, 2048]) {
+test('selected slice resolution stays constant as frame count and memory use increase', () => {
+    for (const count of [1, 30, 654, 660, 750, 2048]) {
         for (const size of [400, 800, 1200, 2160]) {
-            const plan = core.texturePlan(count, size, 16 / 9, budget, 1024);
-            assert.ok(plan.estimatedBytes <= budget);
-            assert.ok(plan.width <= 1024 && plan.height <= 1024);
-            assert.ok(Math.abs(plan.width / plan.height - 16 / 9) < 0.03);
+            const plan = core.texturePlan(count, size, 16 / 9);
+            assert.equal(plan.width, size);
+            assert.equal(plan.height, Math.round(size * 9 / 16));
+            assert.equal(plan.downscaled, false);
         }
     }
-    assert.equal(core.texturePlan(30, 800, 16 / 9, budget).downscaled, false);
-    assert.equal(core.texturePlan(660, 800, 16 / 9, budget).downscaled, true);
+    const medium = core.texturePlan(750, 800, 16 / 9);
+    assert.ok(medium.estimatedBytes > 1024 * 1024 * 1024);
+    assert.deepEqual([medium.width, medium.height], [800, 450]);
+});
+
+test('GPU texture-size limits are respected independently of memory use', () => {
+    const plan = core.texturePlan(750, 2160, 16 / 9, 1024);
+    assert.equal(plan.width, 1024);
+    assert.equal(plan.height, 576);
+    assert.equal(plan.downscaled, true);
+    assert.deepEqual(core.texturePlan(750, 800, 16 / 9, 1024), core.texturePlan(750, 800, 16 / 9));
 });
 
 test('playback takes the source duration even when preview frames are reduced', () => {

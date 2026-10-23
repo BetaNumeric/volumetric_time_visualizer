@@ -38,12 +38,14 @@ preferences, including FPS, resolution, exposure model and interpolation.
 They do not store source files, trim ranges, or physical placement. Browser
 storage restrictions leave preferences usable for the current session.
 
-Large previews are downscaled to an estimated combined canvas/GPU texture
-budget of 256 MiB (128 MiB on devices reporting 4 GiB RAM or less). A matching
-budget is reserved for staging a replacement while retaining the old stack.
-The panel shows the actual planned resolution and estimate. Frame count is
-capped at 2,048; fewer frames allow higher resolution. Estimates exclude browser
-overhead, original-file decoding, render targets and the framebuffer.
+The selected Max Res is preserved regardless of frame count or estimated RAM:
+Medium uses 800 × 450 textures, including large stacks. Image quality is
+prioritized over frame rate; memory use is displayed as an estimate and does
+not trigger automatic downscaling. Only the GPU's hard texture-size limit can
+reduce the selected dimensions, with an explicit label. Frame count is capped
+at 2,048. Estimates include frame canvases and GPU textures but exclude browser
+overhead, original-file decoding, render targets and the framebuffer. Staged
+replacements temporarily retain both the previous and incoming stack.
 
 Static views render on changes. Scanning trails accumulate offscreen, and
 Blend adjacent slices optionally crossfades images during smooth scanning.
