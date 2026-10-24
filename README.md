@@ -19,6 +19,13 @@ reader accepts `volume_height_cm` / `offset_cm` aliases as well as `height_cm`
 placement aliases consistent. Video decoding depends on browser codec support;
 files must expose a finite duration.
 
+For ordinary H.264 MP4s with a missing keyframe seek index, the importer rebuilds
+that index in memory before extracting frames. Encoded video/audio bytes and the
+original file stay unchanged. Existing indexes, fragmented MP4s and other codecs
+use the normal browser decoding path. This handles files that play correctly
+but repeat widely spaced keyframes when seeking. The index is the MP4
+[`stss` sync sample table](https://developer.apple.com/documentation/quicktime-file-format/sync_sample_atom).
+
 Regenerate Stack resamples the current source while preserving edited volume
 height, placement and alignment. Loading a source through the file picker uses
 its original metadata. Reset geometry to source explicitly restores that
@@ -63,7 +70,8 @@ model, profiling results, limitations and texture-array assessment.
 
 Classic scripts keep direct `file://` opening available. `js/app.js` owns
 application state, scene setup, geometry and UI events. `sources.js` handles
-image/video decoding; `source-transaction.js` stages imports and owns rollback
+image/video decoding; `mp4-index.js` repairs missing AVC seek indexes;
+`source-transaction.js` stages imports and owns rollback
 and commit; `exports.js` handles saves; `batch.js` runs queues; `workflow.js`
 coordinates presets and result UI. Settings, trails, shaders and pure math
 have their own files. Shared application state is explicit in the controller;

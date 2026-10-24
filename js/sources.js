@@ -63,7 +63,9 @@
                 video.style.display = 'none';
                 document.body.appendChild(video);
 
-                objectUrl = URL.createObjectURL(file);
+                const prepared = await Mp4Index.prepareForSeeking(file, { checkCancelled: throwIfProcessingCancelled });
+                throwIfProcessingCancelled();
+                objectUrl = URL.createObjectURL(prepared.blob);
                 video.muted = true;
                 video.playsInline = true;
                 video.autoplay = false;

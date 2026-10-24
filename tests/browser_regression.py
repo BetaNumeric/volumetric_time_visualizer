@@ -292,6 +292,39 @@ with sync_playwright() as playwright:
     assert quality['detail'] == [255, 0, 255, 0], quality
     passed('750-frame Medium stack preserves resolution and single-pixel detail', quality)
 
+    meander = ROOT / 'meander_test.mp4'
+    if meander.exists():
+        page.evaluate("resolutionSelect.value='400';fpsSelect.value='30';inputs.count.value='300'")
+        page.locator('#videoInput').set_input_files(str(meander))
+        page.wait_for_function('!isProcessing', timeout=60000)
+        if page.evaluate("statusText.textContent.includes('not supported by this browser')"):
+            assert page.evaluate("frameMeshes.length===750 && currentSourceType==='sequence'")
+            passed('unsupported meander codec retains the previous stack', {'engine': engine})
+        else:
+            page.evaluate('''window.videoFrameStats=()=>{
+                const hashes=frameMeshes.map(mesh=>{
+                    const image=mesh.material.uniforms.map.value.image;
+                    const pixels=image.getContext('2d').getImageData(0,0,image.width,image.height).data;
+                    let hash=2166136261;
+                    for(const value of pixels)hash=Math.imul(hash^value,16777619);
+                    return hash>>>0;
+                });
+                return {frames:hashes.length,unique:new Set(hashes).size,duration:currentSourceDuration,
+                    source:currentVideoFile?.name};
+            }''')
+            result = page.evaluate('videoFrameStats()')
+            assert result['frames'] == result['unique'] == 300, result
+            assert result['duration'] == 10 and result['source'] == 'meander_test.mp4'
+            passed('meander MP4 imports all 300 distinct frames with its missing seek index repaired', result)
+            result = page.evaluate('''async()=>{
+                applyTrimValues(0.2,1.2,10);inputs.count.value='30';
+                if(!await processVideoSource(currentVideoFile))throw new Error(statusText.textContent);
+                return {...videoFrameStats(),start:stackGenParams.start,duration:stackGenParams.duration};
+            }''')
+            assert result['frames'] == result['unique'] == 30, result
+            assert abs(result['start'] - 0.2) < 1e-6 and abs(result['duration'] - 1) < 1e-6
+            passed('trimmed video regeneration preserves distinct frames between keyframes', result)
+
     video = ROOT / 'examples' / 'particle_sim_rectangle.mp4'
     if video.exists():
         page.evaluate("inputs.count.max='2048';inputs.count.value='4'")

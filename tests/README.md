@@ -18,3 +18,10 @@ imports, settings reload, blocked storage, batch retries and context recovery.
 If `examples/` is present, its media is read to check actual video import and
 the full sequence. Batch writes are mocked. No test writes to source folders.
 The final profile includes GPU completion and is a headless host measurement.
+
+If `meander_test.mp4` is present at the project root, the browser suite checks
+that its missing seek index is repaired: all 300 frames must be distinct, as
+must the 30 frames regenerated from a one-second trim between keyframes.
+Node tests use generated MP4 structures to cover index repair, preserved media,
+audio offsets, front/end metadata, 32/64-bit offsets, cancellation and malformed
+input, without needing the supplied clip.
